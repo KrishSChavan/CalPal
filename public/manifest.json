@@ -1,0 +1,22 @@
+{
+  "name": "Calorie Tracker",
+  "short_name": "CalorieApp",
+  "description": "Track your daily calorie intake with a beautiful, modern app.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1f2937",
+  "theme_color": "#9333ea",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "calorie-app-icon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "calorie-app-icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Uploaded meal images (transient)
+uploads/*
+!uploads/.gitkeep
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
