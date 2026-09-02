@@ -305,6 +305,35 @@ test('RECONCILE=0 halves the model calls and still returns DB-derived calories',
   }
 });
 
+test('RECONCILE_MODEL sends the two calls to different quota buckets', async () => {
+  const client = scriptedClient();
+  vision.setClientFactory(() => client);
+  process.env.VISION_MODEL = 'gemini-3.5-flash-lite';
+  process.env.RECONCILE_MODEL = 'gemini-3.8-flash';
+  try {
+    await postPhoto({ slot: 'dinner' });
+    assert.equal(client.bodies.length, 2);
+    assert.equal(client.bodies[0].model, 'gemini-3.5-flash-lite');
+    assert.equal(client.bodies[1].model, 'gemini-3.8-flash');
+  } finally {
+    delete process.env.VISION_MODEL;
+    delete process.env.RECONCILE_MODEL;
+  }
+});
+
+test('both calls share one model when RECONCILE_MODEL is unset', async () => {
+  const client = scriptedClient();
+  vision.setClientFactory(() => client);
+  process.env.VISION_MODEL = 'gemini-3.5-flash-lite';
+  try {
+    await postPhoto({ slot: 'dinner' });
+    assert.equal(client.bodies[0].model, 'gemini-3.5-flash-lite');
+    assert.equal(client.bodies[1].model, 'gemini-3.5-flash-lite', 'conservative default');
+  } finally {
+    delete process.env.VISION_MODEL;
+  }
+});
+
 test('two-call mode marks the disagreement check as actually run', async () => {
   vision.setClientFactory(() => scriptedClient());
   const { body } = await postPhoto({ slot: 'dinner' });

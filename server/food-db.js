@@ -164,6 +164,16 @@ const MODIFIERS = new Set([
   "piece", "pieces", "side", "plate",
   // cuts and presentations -- never the identity of the food
   "fillet", "filet", "cutlet", "strip", "tender", "wedge", "chunk",
+  // Doneness / knife work / equipment. These were missing and it cost real
+  // matches: "medium rare grilled ribeye steak" took head noun "rare",
+  // which exists in no FNDDS row, so layer 3 excluded every candidate and
+  // the query returned NO MATCH. "thick cut smoked bacon" took head "cut"
+  // and landed on "Canadian bacon".
+  "rare", "cut", "cuts", "trimmed", "boneless", "skinless", "bone", "bones",
+  "well", "done", "oven", "air", "slow", "pressure", "freshly", "day",
+  "seasoned", "unseasoned", "homestyle", "classic", "traditional",
+  "authentic", "style", "sized", "generous", "heaping", "handful", "bunch",
+  "slab", "slice", "slices", "chop", "chops",
   // Colours. These qualify a food, they never name one, so they must not be
   // taken as the head noun: without this, "black coffee" picks head "black"
   // and lands on "Black beans, NFS". They still take part in BM25 and
@@ -172,6 +182,113 @@ const MODIFIERS = new Set([
   "black", "white", "brown", "red", "green", "yellow", "golden", "dark",
   "pale", "blonde",
 ]);
+
+/**
+ * Layer 3 -- FLAVOUR HEADS.
+ *
+ * Sauce / seasoning / flavour words. Grammatically these are modifiers of the
+ * food noun ("BUFFALO cauliflower", "TERIYAKI salmon", "BARBECUE ribs"), but
+ * they are also the identity of a condiment row in FNDDS, and they carry very
+ * high IDF. Taking one as the head noun was the single worst defect in this
+ * module: the hard filter then bound to the sauce, so
+ *
+ *   "buffalo cauliflower" -> Buffalo sauce          (11 kcal, a 4x error)
+ *   "teriyaki salmon"     -> Chicken or turkey with teriyaki   (wrong species)
+ *   "honey mustard chicken" -> Honey mustard dip
+ *   "tartar sauce cod"    -> Tartar sauce
+ *   "barbecue ribs"       -> Barbecue rib sandwich  (invents a bun)
+ *   "blueberry pancakes"  -> Blueberries, dried     (317 kcal of dried fruit)
+ *
+ * They are skipped only when CHOOSING the head noun. They stay in the term
+ * list, so they still drive BM25 and coverage -- "Barbecue pork" still
+ * outranks plain "Pork" for "barbecue pork". And if the whole query is
+ * flavour words ("honey", "barbecue sauce"), analyzeQuery's existing
+ * all-modifiers fallback puts the head back on the first token, so a query
+ * that really IS about the condiment still resolves to it.
+ */
+const FLAVOR_HEADS = new Set([
+  "buffalo", "teriyaki", "barbecue", "barbeque", "bbq", "honey", "mustard",
+  "dijon", "tartar", "maple", "pesto", "ranch", "marinara", "alfredo",
+  "hoisin", "sriracha", "cajun", "creole", "blackened", "glazed", "spicy",
+  "savory", "savoury", "salted", "smoky", "herb", "herbed", "peppercorn",
+  "truffle", "wasabi", "jerk", "tandoori", "satay", "katsu", "adobo",
+  "chimichurri", "aioli", "vinaigrette", "gochujang", "harissa", "zaatar",
+  "buttermilk", "balsamic", "chipotle", "sesame", "ginger", "garlic",
+  "blueberry", "strawberry", "raspberry", "blackberry", "cranberry",
+  "caramel", "vanilla", "cinnamon", "toffee", "praline",
+]);
+
+/**
+ * Layer 3 -- BRAND / CHAIN NAMES.
+ *
+ * FNDDS carries a handful of branded rows ("Big Mac (McDonalds)",
+ * "Whopper (Burger King)", "Chipotle dip") but no general chain coverage.
+ * Before this set, a brand token became the head noun and destroyed the
+ * query outright:
+ *
+ *   "Starbucks latte"        -> NO MATCH (no row contains "starbucks")
+ *   "McDonalds french fries" -> the McDonalds *burgers* (head noun bound to
+ *                               the brand, so no fries row could pass)
+ *   "Chipotle burrito bowl"  -> Chipotle dip, light
+ *
+ * Brands are skipped for head selection AND excluded from the coverage
+ * denominator (an unknown brand must not look like a missing ingredient),
+ * but they remain in the term list, so "McDonalds cheeseburger" still gets
+ * a BM25 lift on the genuine "Cheeseburger (McDonalds)" row.
+ */
+const BRAND_TOKENS = new Set([
+  "starbucks", "mcdonald", "mcdonalds", "kfc", "subway", "chipotle",
+  "domino", "dominos", "wendy", "wendys", "popeyes", "panera", "dunkin",
+  "arby", "arbys", "sonic", "chickfila", "nando", "nandos", "greggs",
+  "costa", "pret", "panda", "chilis", "applebees", "denny", "dennys",
+  "ihop", "sbarro", "quiznos", "jimmy", "johns", "culvers", "hardees",
+  "whataburger", "zaxbys", "bojangles", "raising", "canes", "portillos",
+  "starbuck", "wetherspoons", "nero", "leon", "itsu", "wagamama",
+]);
+
+/**
+ * Anatomical / offal parts. A photograph of a meal is never a plate of
+ * chicken skin, so a candidate whose description names a part the query did
+ * not ask for is almost certainly not what was eaten. Before this, bare
+ * "chicken" returned "Chicken skin" (450 kcal) instead of USDA's own
+ * "Chicken, NS as to part and cooking method" default (164) -- a 2.7x
+ * overestimate on one of the commonest queries a vision model emits.
+ */
+const OFFAL_PARTS = new Set([
+  "skin", "tail", "back", "neck", "gizzard", "gizzards", "liver", "livers",
+  "heart", "hearts", "giblet", "giblets", "feet", "foot", "tongue",
+  "kidney", "kidneys", "brain", "tripe", "marrow", "cartilage",
+]);
+
+/**
+ * Preservation / processing qualifiers. A query that did not say "dried"
+ * should not be answered with a dried row: dried fruit is roughly 5x the
+ * energy density of the fresh fruit, so this is one of the few single-token
+ * mistakes that can be catastrophic on its own.
+ */
+const PROCESS_QUALIFIERS = new Set([
+  "dried", "dehydrated", "canned", "tinned", "frozen", "instant",
+  "powdered", "condensed", "concentrated", "candied", "pickled", "smoked",
+  "creamed", "juice", "syrup", "puree", "paste", "flour", "powder",
+  "extract", "chips", "crisps", "sauce", "gravy", "dressing", "dip",
+]);
+
+/**
+ * Cooking methods, for the raw-row guard. If the query names any of these
+ * and does not say "raw", a "..., raw" candidate is wrong by construction.
+ * "roasted brussels sprouts with olive oil" returned "Brussels sprouts, raw"
+ * (43 kcal) instead of the cooked-with-fat row (67) purely because the raw
+ * row is shorter and BM25 rewards that.
+ */
+const COOK_METHODS = new Set([
+  "cooked", "boiled", "fried", "grilled", "griddled", "baked", "roasted",
+  "roast", "steamed", "steam", "poached", "blanched", "simmered", "braised",
+  "stewed", "sauteed", "sauted", "microwaved", "toasted", "charred",
+  "seared", "scrambled", "reheated", "warmed", "heated", "barbecued",
+  "broiled", "rotisserie",
+]);
+const RE_RAW_ROW = /\braw\b|\buncooked\b/i;
+const RAW_PENALTY = 0.35;
 
 /**
  * Cooking methods that imply "cooked" but are poorly represented as literal
@@ -341,16 +458,116 @@ const ALIASES = [
   // common menu phrasings
   { from: "french fry", to: "potato french fries" },
   { from: "fries", to: "potato french fries", unless: ["potato"] },
+
+  // --- added by the adversarial pass -------------------------------------
+  // Every left-hand phrase below was checked absent from FNDDS as written,
+  // and the right-hand phrase checked present.
+  //
+  // FNDDS spells it "Macaroni or noodles with cheese" (58145110, 223 kcal).
+  // Unaliased, head noun "mac" matched "Easy Mac type" (110) -- a 2x
+  // underestimate -- and "Big Mac".
+  { from: "mac and cheese", to: "macaroni noodles cheese" },
+  { from: "mac n cheese", to: "macaroni noodles cheese" },
+  { from: "macaroni cheese", to: "macaroni noodles cheese" },
+  { from: "mac cheese", to: "macaroni noodles cheese" },
+  // "PB&J" normalizes to "pb j"; neither token is in FNDDS.
+  { from: "pb j", to: "peanut butter and jelly sandwich" },
+  { from: "pbj", to: "peanut butter and jelly sandwich" },
+  // Egg doneness. FNDDS has no "sunny side up" / "over easy" row; all of
+  // these are the fried-egg rows.
+  { from: "sunny side up", to: "fried" },
+  { from: "sunnyside up", to: "fried" },
+  { from: "over easy", to: "fried" },
+  { from: "over medium", to: "fried" },
+  { from: "over hard", to: "fried" },
+  { from: "hard boiled", to: "boiled" },
+  { from: "soft boiled", to: "boiled" },
+  // British contraction of spaghetti bolognese.
+  { from: "spag bol", to: "pasta tomato based sauce meat" },
+  // Absent from FNDDS; it is eggs poached in tomato sauce.
+  { from: "shakshuka", to: "egg omelet tomatoes" },
+  { from: "shakshouka", to: "egg omelet tomatoes" },
+  // FNDDS writes "Egg omelet or scrambled egg"; "frittata" is absent.
+  { from: "frittata", to: "egg omelet" },
+  // "aubergine"/"eggplant" already handled; these are the remaining common
+  // Commonwealth / regional spellings absent from FNDDS.
+  { from: "beetroot", to: "beets" },
+  { from: "spring onion", to: "green onion" },
+  { from: "scallion", to: "green onion" },
+  { from: "swede", to: "rutabaga" },
+  { from: "gammon", to: "ham" },
+  { from: "candy floss", to: "cotton candy" },
+  { from: "ice lolly", to: "popsicle" },
 ];
+
+/**
+ * Layer 4b -- TOKEN EXPANSIONS.
+ *
+ * Unlike the alias table these ADD tokens rather than replacing them, so the
+ * original wording still scores. They exist because FNDDS spells some very
+ * ordinary distinctions as multi-word phrases:
+ *
+ *   "skinless" is written "skin not eaten". Without the expansion,
+ *   "grilled chicken breast, skinless, boneless" returned
+ *   "Chicken breast, grilled WITH SAUCE, SKIN EATEN" (202 kcal) -- a row
+ *   that contradicts two of the query's own modifiers -- instead of
+ *   "Chicken breast, grilled without sauce, skin not eaten" (176).
+ */
+const EXPANSIONS = new Map([
+  ["skinless", ["skin", "not", "eaten"]],
+  ["peeled", ["skin", "not", "eaten"]],
+  ["unbreaded", ["not", "coated"]],
+  ["undressed", ["no", "dressing"]],
+  ["unsweetened", ["no", "sugar"]],
+  ["takeaway", ["restaurant"]],
+  ["takeout", ["restaurant"]],
+  ["diner", ["restaurant"]],
+  ["fastfood", ["fast", "food"]],
+  ["deepfried", ["deep", "fried"]],
+  ["stirfry", ["stir", "fried"]],
+  ["stirfried", ["stir", "fried"]],
+  ["rotisserie", ["roasted"]],
+  ["broiled", ["baked", "broiled"]],
+  ["barbecued", ["barbecue"]],
+  ["grilled", ["grilled", "broiled"]],
+]);
 
 /* ------------------------------------------------------------------ *
  * Text processing
  * ------------------------------------------------------------------ */
 
+/**
+ * Latin-1 / Latin Extended letters that NFD does not decompose into a base
+ * letter plus a combining mark. Without these, stripping combining marks
+ * still leaves an unmatchable character which `[^a-z0-9]` then turns into a
+ * word break.
+ */
+const LIGATURES = [
+  [/\u00df/g, "ss"], [/\u00e6/g, "ae"], [/\u0153/g, "oe"],
+  [/\u00f8/g, "o"], [/\u0111/g, "d"], [/\u0142/g, "l"],
+  [/\u00fe/g, "th"], [/\u00f0/g, "d"],
+];
+
+/**
+ * Fold to plain ASCII lowercase words.
+ *
+ * The NFD pass is load-bearing, not cosmetic. Without it "crème brûlée"
+ * normalized to "cr me br l e" -- three junk fragments and a head noun of
+ * "cr" -- so the matcher returned NO MATCH even though FNDDS ships
+ * "Creme brulee" (13210370, 113 kcal). Same for "jalapeño" (FNDDS writes
+ * "jalapenos") and "café". A vision model transcribing a menu emits
+ * accented text routinely, so every such query was silently unanswerable.
+ */
 function normalizeText(s) {
-  return String(s === null || s === undefined ? "" : s)
+  let out = String(s === null || s === undefined ? "" : s)
     .toLowerCase()
-    .replace(/[‘’“”]/g, "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, ""); // combining diacritical marks
+  for (let i = 0; i < LIGATURES.length; i++) {
+    out = out.replace(LIGATURES[i][0], LIGATURES[i][1]);
+  }
+  return out
+    .replace(/[\u2018\u2019\u201c\u201d]/g, "")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 }
@@ -581,11 +798,16 @@ function analyzeQuery(query) {
   const base = tokenize(aliased);
   if (base.length === 0) return null;
 
-  // Layer 3: head noun = first non-modifier token; if the query is all
-  // modifiers ("grilled, sliced"), fall back to the first token.
+  // Layer 3: head noun = first token that is not a preparation modifier, a
+  // flavour/sauce word, or a brand name. If the query is nothing but those
+  // ("grilled, sliced", "honey", "Starbucks"), fall back to the first token
+  // so a query that really IS about the condiment or the brand still works.
+  const skipAsHead = function (t) {
+    return MODIFIERS.has(t) || FLAVOR_HEADS.has(t) || BRAND_TOKENS.has(t);
+  };
   let head = null;
   for (let i = 0; i < base.length; i++) {
-    if (!MODIFIERS.has(base[i])) {
+    if (!skipAsHead(base[i])) {
       head = base[i];
       break;
     }
@@ -612,16 +834,38 @@ function analyzeQuery(query) {
   }
   if (impliesCooked && terms.indexOf("cooked") === -1) terms.push("cooked");
 
+  // Layer 4b: additive expansions ("skinless" -> "skin not eaten").
+  for (let i = 0; i < base.length; i++) {
+    const ex = EXPANSIONS.get(base[i]);
+    if (!ex) continue;
+    for (let j = 0; j < ex.length; j++) {
+      if (terms.indexOf(ex[j]) === -1) terms.push(ex[j]);
+    }
+  }
+
   const termSet = new Set(terms);
   const uniqueTerms = Array.from(termSet);
+
+  // Brand tokens are excluded from the coverage denominator: an unknown
+  // chain name must not read as a missing ingredient. They stay in
+  // uniqueTerms so BM25 can still reward a genuinely branded FNDDS row.
+  const coverageTerms = uniqueTerms.filter(function (t) {
+    return !BRAND_TOKENS.has(t);
+  });
 
   let wantsFat = false;
   let wantsCondiment = false;
   let isDish = false;
+  let wantsRaw = false;
+  let hasMethod = false;
+  const dishTerms = [];
   for (let i = 0; i < uniqueTerms.length; i++) {
-    if (FAT_SIGNAL.has(uniqueTerms[i])) wantsFat = true;
-    if (CONDIMENT_QUERY_TOKENS.has(uniqueTerms[i])) wantsCondiment = true;
-    if (DISH_TOKENS.has(uniqueTerms[i])) isDish = true;
+    const t = uniqueTerms[i];
+    if (FAT_SIGNAL.has(t)) wantsFat = true;
+    if (CONDIMENT_QUERY_TOKENS.has(t)) wantsCondiment = true;
+    if (DISH_TOKENS.has(t)) { isDish = true; dishTerms.push(t); }
+    if (t === "raw" || t === "uncooked" || t === "fresh") wantsRaw = true;
+    if (COOK_METHODS.has(t)) hasMethod = true;
   }
 
   // A gentle cooking method with no fat word anywhere is positive evidence
@@ -642,6 +886,10 @@ function analyzeQuery(query) {
     wantsIngredient: termSet.has("ingredient"),
     impliesNoFat: impliesNoFat,
     isDish: isDish,
+    coverageTerms: coverageTerms,
+    dishTerms: dishTerms,
+    wantsRaw: wantsRaw,
+    hasMethod: hasMethod,
   };
 }
 

@@ -302,6 +302,19 @@ function getModelId() {
   return typeof m === "string" && m.trim() ? m.trim() : DEFAULT_VISION_MODEL;
 }
 
+/**
+ * Model for the reconciliation pass. Gemini free-tier quota is bucketed per
+ * project PER MODEL - Google's own 429s name the bucket
+ * `GenerateRequestsPerDayPerProjectPerModel-FreeTier` - so pointing Call 2 at
+ * a different model draws it from a separate daily pool instead of halving the
+ * photos this app can analyze. Defaults to the Call-1 model, i.e. one pool,
+ * which is the correct conservative default.
+ */
+function getReconcileModelId() {
+  const m = process.env.RECONCILE_MODEL;
+  return typeof m === "string" && m.trim() ? m.trim() : getModelId();
+}
+
 function getMediaResolution() {
   const m = process.env.VISION_MEDIA_RESOLUTION;
   return typeof m === "string" && m.trim() ? m.trim() : DEFAULT_MEDIA_RESOLUTION;
@@ -1231,7 +1244,7 @@ async function callOnce(client, opts) {
 
   for (;;) {
     const body = {
-      model: getModelId(),
+      model: opts.model || getModelId(),
       messages: buildMessages(opts.systemPrompt, opts.buildUserText(mode), opts.imageDataUrl),
       response_format: buildResponseFormat(opts.schemaName, opts.schema, mode),
       temperature: opts.temperature,
@@ -1452,6 +1465,7 @@ async function reconcile(p) {
     systemPrompt: CALL2_SYSTEM,
     imageDataUrl: imageDataUrl,
     temperature: 0.1,
+    model: getReconcileModelId(),
     buildUserText: (mode) => buildCall2UserText(input, mode),
   });
 
@@ -1459,7 +1473,7 @@ async function reconcile(p) {
   Object.defineProperty(out, "_meta", {
     enumerable: false,
     value: {
-      model: getModelId(),
+      model: getReconcileModelId(),
       responseFormatMode: result.mode,
       attempts: result.attempts,
       mediaResolution: capabilities.mediaResolution ? getMediaResolution() : null,

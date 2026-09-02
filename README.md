@@ -32,13 +32,36 @@ npm start
 You need one free API key: **https://aistudio.google.com/apikey** (Google AI
 Studio — no credit card). Put it in `.env` as `GEMINI_API_KEY`.
 
-### Request cost
+### Quota, if you use Gemini for other projects too
 
-Each analyzed photo costs **two** model requests by default. If this key
-shares a free-tier quota with your other projects, set `RECONCILE=0` to drop
-to one request per photo. You lose the reconciliation pass — worth measuring
-on your own photos, since the published ~12% gain from two-step was measured
-on a model that has since been retired and *reversed* on another.
+Gemini rate limits are enforced **per Google Cloud project, not per API key** —
+["Rate limits are applied per project, not per API key"](https://ai.google.dev/gemini-api/docs/rate-limits).
+A fresh key inside a project you already use buys zero headroom. **Create this
+key in its own project.** Separate projects get
+[separate counters](https://docs.cloud.google.com/docs/quotas/overview).
+
+Each analyzed photo costs **two** requests. Two ways to cut that:
+
+| | effect | cost |
+| --- | --- | --- |
+| `RECONCILE=0` | 1 request per photo | loses the reconciliation pass |
+| `RECONCILE_MODEL=<other model>` | 2 requests, 2 separate pools | none |
+
+The second is usually the better trade. Quota buckets are per-project *per
+model* — Google's own 429s name `GenerateRequestsPerDayPerProjectPerModel-FreeTier`
+— so pointing Call 2 at a different model draws it from a different daily
+allowance rather than halving your photo budget.
+
+Two things that will bite otherwise: the daily counter resets at midnight
+**Pacific**, not UTC, and Google no longer publishes free-tier RPM/RPD figures
+at all — read your real numbers at
+[aistudio.google.com/rate-limit](https://aistudio.google.com/rate-limit) while
+signed in. Any "15 RPM / 1,500 RPD" figure from a blog post is folklore.
+
+One thing *not* to do to save quota: dropping the image from the second call.
+It looks like an easy saving, but requests-per-day is the binding limit, not
+tokens, so it saves nothing that matters — and reconciling from the ingredient
+list alone measures *worse* (66.5 vs 53.3 kcal MAE).
 
 No food-database key is needed. USDA FNDDS ships in this repo at
 [`data/fndds-lite.json`](data/fndds-lite.json) (5,432 prepared foods, ~1.2 MB,
