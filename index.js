@@ -35,25 +35,43 @@ function fail(res, status, code, message) {
   return res.status(status).json({ ok: false, error: { code, message } });
 }
 
+const MAX_CANDIDATES = 4;
+
 /* Probe the index once per search term the model offered, then keep the best
-   scoring row. Research verified that hit #1 from any single query is not
+   scoring rows. Research verified that hit #1 from any single query is not
    trustworthy — "butter chicken" ranks "Chicken, back" and "Fruit butter"
-   above the correct row — so a multi-probe plus re-rank is the minimum. */
+   above the correct row — so a multi-probe plus re-rank is the minimum.
+   Adversarial testing put the residual wrong rate at ~5.7% on unseen queries,
+   so a shortlist goes to the model rather than one row taken on faith.
+
+   When nothing clears the score floor the probe is repeated unfiltered. A
+   rejected match is not the same as no information: shown "Beef, NFS" for
+   "beef lasagna" the model can decline it, which is a better outcome than
+   lowering the floor — that is what turns "avocado toast" into French toast. */
 function matchComponent(component) {
   const terms = [];
   if (Array.isArray(component.search_terms)) terms.push(...component.search_terms);
   if (component.name) terms.push(component.name);
 
-  let best = null;
-  const seen = new Set();
-  for (const raw of terms) {
-    const term = String(raw || '').trim();
-    if (!term || seen.has(term.toLowerCase())) continue;
-    seen.add(term.toLowerCase());
-    const [hit] = foodDb.search(term, { limit: 1 });
-    if (hit && (!best || hit.score > best.score)) best = hit;
-  }
-  return best;
+  const probe = (opts) => {
+    const pool = new Map();
+    const seen = new Set();
+    for (const raw of terms) {
+      const term = String(raw || '').trim();
+      if (!term || seen.has(term.toLowerCase())) continue;
+      seen.add(term.toLowerCase());
+      for (const hit of foodDb.search(term, opts)) {
+        const prev = pool.get(hit.code);
+        if (!prev || hit.score > prev.score) pool.set(hit.code, hit);
+      }
+    }
+    return [...pool.values()].sort((a, b) => b.score - a.score).slice(0, MAX_CANDIDATES);
+  };
+
+  const confident = probe({ limit: 3 });
+  if (confident.length) return { best: confident[0], candidates: confident, confident: true };
+
+  return { best: null, candidates: probe({ limit: 3, minScore: 0 }), confident: false };
 }
 
 /* FNDDS gives portionDescription -> gramWeight. Restating the grams as "about
@@ -118,24 +136,29 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     }
 
     /* Local step — cross-reference against the bundled FNDDS snapshot. */
-    const matched = components.map((c) => ({ component: c, row: matchComponent(c) }));
+    const matched = components.map((c) => ({ component: c, ...matchComponent(c) }));
 
-    const dbRows = matched.map(({ component, row }, i) => ({
+    const asRow = (r) => ({
+      fdc_id: r.code,
+      description: r.description,
+      category: r.category,
+      kcal_per_100g: r.kcal100,
+      protein_per_100g: r.protein100,
+      carb_per_100g: r.carb100,
+      fat_per_100g: r.fat100,
+      portions: r.portions,
+    });
+
+    /* The model gets the shortlist, not a verdict. It picks one by fdc_id in
+       chosen_fdc_id, or picks none — the safeguard that catches a confident
+       wrong match like "Banana, raw" for banana bread. */
+    const dbRows = matched.map(({ component, best, candidates, confident }, i) => ({
       index: i,
       component: component.name,
       grams_estimated: component.grams_likely,
-      match: row
-        ? {
-            fdc_id: row.code,
-            description: row.description,
-            category: row.category,
-            kcal_per_100g: row.kcal100,
-            protein_per_100g: row.protein100,
-            carb_per_100g: row.carb100,
-            fat_per_100g: row.fat100,
-            portions: row.portions,
-          }
-        : null,
+      match: best ? asRow(best) : null,
+      candidates: candidates.map(asRow),
+      candidates_below_threshold: !confident,
     }));
 
     /* Call 2 — reconcile the estimate against the retrieved rows, with the
@@ -153,9 +176,18 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
 
     const finals = call2 && Array.isArray(call2.components) ? call2.components : [];
 
-    const out = matched.map(({ component, row }, i) => {
+    const out = matched.map(({ component, best, confident }, i) => {
       const final = finals[i] || {};
       const grams = Number(final.grams_final) || Number(component.grams_likely) || 0;
+
+      /* Resolve which FNDDS row actually prices this component:
+           - the model named one          -> its choice wins over the matcher's
+           - the model named none, and the matcher was confident -> matcher's row
+           - neither                      -> unmatched; the model's own kcal, or zero
+         Letting the model override is the load-bearing safeguard. Without it a
+         5.7% wrong-match rate goes straight into the total unchallenged. */
+      const picked = final.chosen_fdc_id ? foodDb.lookup(String(final.chosen_fdc_id)) : null;
+      const row = picked || (confident ? best : null);
       const kcal100 = row && Number.isFinite(row.kcal100) ? row.kcal100 : null;
 
       return {

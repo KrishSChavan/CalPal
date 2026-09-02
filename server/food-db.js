@@ -282,6 +282,13 @@ const MODIFIERS = new Set([
   // Meal occasions. Never the identity of a food, but FNDDS does have
   // "Breakfast bar" / "Breakfast pastry" rows, so taking "breakfast" as the
   // head noun sent "breakfast sausage patty" to "Breakfast bar, NFS" (376).
+  // Beverage and serving adjectives. "sparkling water" took head noun
+  // "sparkling" and returned "Wine, sparkling" (75 kcal) for a 0 kcal drink.
+  "sparkling", "carbonated", "fizzy", "still", "iced", "decaf",
+  "decaffeinated", "unsweetened", "sweetened",
+  "skim", "nonfat", "lite", "diet", "zero", "sugarfree", "skinny",
+  // NOTE: "flavored"/"flavoured" are deliberately NOT here -- see
+  // PROCESS_QUALIFIERS.
   "breakfast", "lunch", "dinner", "brunch", "supper",
   "appetizer", "starter", "course", "helping", "leftovers",
   // Colours. These qualify a food, they never name one, so they must not be
@@ -353,6 +360,23 @@ const FLAVOR_HEADS = new Set([
  * but they remain in the term list, so "McDonalds cheeseburger" still gets
  * a BM25 lift on the genuine "Cheeseburger (McDonalds)" row.
  */
+/**
+ * Layer 3 -- nationality and cuisine adjectives. Like flavour words these
+ * qualify a food rather than naming one, but several are also the identity
+ * of an unrelated FNDDS row, which made them dangerous head nouns:
+ * "greek gyro plate" took head "greek" and returned GREEK YOGURT.
+ *
+ * "french" is deliberately absent: FNDDS genuinely names foods "French
+ * toast" and "Potato, french fries", so there it IS the identity.
+ */
+const CUISINE_ADJECTIVES = new Set([
+  "greek", "italian", "mexican", "chinese", "japanese", "korean", "thai",
+  "indian", "spanish", "german", "american", "mediterranean", "asian",
+  "southern", "cuban", "hawaiian", "jamaican", "moroccan", "lebanese",
+  "turkish", "vietnamese", "russian", "polish", "irish", "british",
+  "english", "continental", "oriental",
+]);
+
 const BRAND_TOKENS = new Set([
   "starbucks", "mcdonald", "mcdonalds", "kfc", "subway", "chipotle",
   "domino", "dominos", "wendy", "wendys", "popeyes", "panera", "dunkin",
@@ -388,6 +412,7 @@ const PROCESS_QUALIFIERS = new Set([
   "powdered", "condensed", "concentrated", "candied", "pickled", "smoked",
   "creamed", "juice", "syrup", "puree", "paste", "flour", "powder",
   "extract", "chips", "crisps", "sauce", "gravy", "dressing", "dip",
+  "flavored", "flavoured",
 ]);
 
 /**
@@ -406,6 +431,32 @@ const COOK_METHODS = new Set([
 ]);
 const RE_RAW_ROW = /\braw\b|\buncooked\b/i;
 const RAW_PENALTY = 0.35;
+
+/**
+ * Layer 12 -- reduced-calorie variants the query never asked for.
+ *
+ * "Mayonnaise, light" (238) and "Mayonnaise, regular" (680) scored
+ * identically for the bare query "mayonnaise", so a description-length
+ * tie-break silently decided a 2.9x difference in energy. The words
+ * involved are ordinary MODIFIERS, which is exactly why every other penalty
+ * layer skipped them.
+ *
+ * Erring toward the full-fat row is the right bias: a photograph does not
+ * reveal that a dressing was the light one, and understating calories is
+ * the failure a calorie tracker must avoid.
+ */
+const RE_DIET_ROW = new RegExp([
+  "\\blight\\b", "\\blite\\b", "\\breduced fat\\b", "\\breduced sugar\\b",
+  "\\breduced calorie\\b", "\\bfat free\\b", "\\bsugar free\\b",
+  "\\blow fat\\b", "\\blow calorie\\b", "\\bnonfat\\b", "\\bnon-fat\\b",
+  "\\bskim\\b", "\\bdiet\\b", "\\bunsweetened\\b",
+].join("|"), "i");
+
+const DIET_QUERY_TOKENS = new Set([
+  "light", "lite", "reduced", "free", "low", "nonfat", "skim", "diet",
+  "unsweetened", "skinny", "lean",
+]);
+const DIET_PENALTY = 0.6;
 
 /**
  * Cooking methods that imply "cooked" but are poorly represented as literal
@@ -470,8 +521,8 @@ const STRUCTURAL = new Set([
 const DISH_TOKENS = new Set([
   "salad", "sandwich", "soup", "curry", "stew", "bowl", "pizza", "taco",
   "burrito", "wrap", "toast", "burger", "cheeseburger", "hamburger",
-  "pasta", "spaghetti", "noodle", "rice", "roll", "plate", "platter",
-  "casserole", "dish", "meal", "entree", "fries", "sub", "melt", "bake",
+  "pasta", "spaghetti", "noodle", "rice", "roll",
+  "casserole", "fries", "sub", "melt", "bake",
   "pie", "stirfry", "omelet", "omelette", "quesadilla", "lasagna",
   "risotto", "paella", "chili", "gumbo", "hash", "skillet",
   // Added by the adversarial pass. Without "chowder", "Clams, NFS" (143)
@@ -623,6 +674,11 @@ const ALIASES = [
   { from: "candy floss", to: "cotton candy" },
   { from: "ice lolly", to: "popsicle" },
   // "popper" is absent from FNDDS; the dish is "Stuffed jalapeno pepper".
+  // Spanish phrasing FNDDS never uses; it writes "Chili with meat" (139).
+  { from: "chili con carne", to: "chili with meat" },
+  { from: "con carne", to: "with meat" },
+  { from: "hash browns", to: "potato hash brown" },
+  { from: "hash brown", to: "potato hash brown", unless: ["potato"] },
   { from: "poppers", to: "stuffed" },
   { from: "popper", to: "stuffed" },
   // "cherry"/"grape" as a tomato SIZE, not the fruit. Unaliased, the head
@@ -909,6 +965,7 @@ function indexDoc(rec, docIdx) {
 
   state.docFlags[docIdx] = {
     raw: RE_RAW_ROW.test(desc),
+    dietVariant: RE_DIET_ROW.test(desc),
     addedFat: RE_ADDED_FAT.test(desc),
     defaultRow: RE_DEFAULT_ROW.test(desc),
     noAddedFat: RE_NO_ADDED_FAT.test(desc),
@@ -925,7 +982,10 @@ function indexDoc(rec, docIdx) {
  */
 function buildSpecificity() {
   for (let i = 0; i < state.N; i++) {
-    const specific = [];
+    // Seeded with the processing qualifiers (layer 8b); the varietal
+    // qualifiers (layer 8) are appended below. Merged so the hot loop in
+    // search() walks one array instead of two.
+    const specific = state.docProcess[i].slice();
     for (const t of state.docTokens[i]) {
       if (MODIFIERS.has(t) || STRUCTURAL.has(t)) continue;
       if (PROCESS_QUALIFIERS.has(t)) continue; // counted once, by layer 8b
@@ -1007,7 +1067,8 @@ function analyzeQuery(query) {
   // ("grilled, sliced", "honey", "Starbucks"), fall back to the first token
   // so a query that really IS about the condiment or the brand still works.
   const skipAsHead = function (t) {
-    return MODIFIERS.has(t) || FLAVOR_HEADS.has(t) || BRAND_TOKENS.has(t);
+    return MODIFIERS.has(t) || FLAVOR_HEADS.has(t) || BRAND_TOKENS.has(t) ||
+      CUISINE_ADJECTIVES.has(t);
   };
   let head = null;
   for (let i = 0; i < base.length; i++) {
@@ -1016,7 +1077,11 @@ function analyzeQuery(query) {
       break;
     }
   }
-  if (head === null) head = base[0];
+  // Every token was a qualifier ("maple syrup", "barbecue sauce", "honey
+  // mustard", "Starbucks"). The head of an English compound is its LAST
+  // noun, so fall back to that rather than the first: taking the first made
+  // "maple syrup" bind to "maple" and return an instant-oatmeal row.
+  if (head === null) head = base[base.length - 1];
 
   // Layer 3b: the compound's semantic head -- the LAST non-modifier token,
   // when it differs from the hard-filter head noun. "blueberry muffin" ->
@@ -1029,6 +1094,13 @@ function analyzeQuery(query) {
     }
   }
   if (tailHead === head) tailHead = null;
+
+  // True when no token was a real food noun -- the query is entirely
+  // flavour, brand or modifier words ("barbecue sauce", "maple syrup").
+  let allQualifier = true;
+  for (let i = 0; i < base.length; i++) {
+    if (!skipAsHead(base[i])) { allQualifier = false; break; }
+  }
 
   // Derived tokens: gentle cooking methods imply the literal word "cooked".
   const terms = base.slice();
@@ -1073,7 +1145,8 @@ function analyzeQuery(query) {
     }
   }
   let coverageTerms = uniqueTerms.filter(function (t) {
-    return !BRAND_TOKENS.has(t) && !FLAVOR_HEADS.has(t) && !derived.has(t);
+    return !BRAND_TOKENS.has(t) && !FLAVOR_HEADS.has(t) &&
+      !CUISINE_ADJECTIVES.has(t) && !derived.has(t);
   });
   // A query that is ENTIRELY flavour or brand words ("salsa", "barbecue
   // sauce", "Starbucks") would otherwise be left with an empty denominator,
@@ -1085,6 +1158,7 @@ function analyzeQuery(query) {
   let wantsCondiment = false;
   let isDish = false;
   let wantsRaw = false;
+  let wantsDiet = false;
   let hasMethod = false;
   const dishTerms = [];
   for (let i = 0; i < uniqueTerms.length; i++) {
@@ -1093,6 +1167,7 @@ function analyzeQuery(query) {
     if (CONDIMENT_QUERY_TOKENS.has(t)) wantsCondiment = true;
     if (DISH_TOKENS.has(t)) { isDish = true; dishTerms.push(t); }
     if (t === "raw" || t === "uncooked" || t === "fresh") wantsRaw = true;
+    if (DIET_QUERY_TOKENS.has(t)) wantsDiet = true;
     if (COOK_METHODS.has(t)) hasMethod = true;
   }
 
@@ -1114,9 +1189,11 @@ function analyzeQuery(query) {
     wantsIngredient: termSet.has("ingredient"),
     impliesNoFat: impliesNoFat,
     isDish: isDish,
+    allQualifier: allQualifier,
     coverageTerms: coverageTerms,
     dishTerms: dishTerms,
     wantsRaw: wantsRaw,
+    wantsDiet: wantsDiet,
     hasMethod: hasMethod,
   };
 }
@@ -1279,21 +1356,15 @@ function search(query, opts) {
     if (flags.defaultRow) score *= DEFAULT_ROW_BONUS;
     if (flags.noAddedFat && q.impliesNoFat) score *= NO_ADDED_FAT_BONUS;
 
-    // Layer 8: varietal-specificity penalty.
+    // Layer 8 + 8b: varietal-specificity and processing-qualifier penalties.
+    // The two lists are merged at index time (they contribute to the same
+    // count). Layer 8b is why an unrequested "dried" is punished at all:
+    // "blueberry pancakes" was answered with "Blueberries, DRIED" (317),
+    // and dried fruit is ~5x the energy density of the fresh food.
     const specific = state.docSpecific[docIdx];
     let extra = 0;
     for (let i = 0; i < specific.length; i++) {
       if (!q.termSet.has(specific[i])) extra++;
-    }
-
-    // Layer 8b: processing qualifiers the query never asked for. Folded into
-    // the same `extra` count. "blueberry pancakes" was answered with
-    // "Blueberries, DRIED" (317 kcal); dried fruit is ~5x the energy density
-    // of the fresh food, so an unrequested processing word is one of the few
-    // single tokens that can be catastrophic on its own.
-    const proc = state.docProcess[docIdx];
-    for (let i = 0; i < proc.length; i++) {
-      if (!q.termSet.has(proc[i])) extra++;
     }
 
     // Layer 8c: unmatched food nouns in the candidate's own description HEAD
@@ -1312,7 +1383,7 @@ function search(query, opts) {
     // "pho", "ribeye steak" and "jalapeno" outright. When the head noun is
     // absent from the head, the extra words are a classifier, not a
     // competing identity; when it is present, they genuinely modify it.
-    if (state.docHeadTokens[docIdx].has(q.head)) {
+    if (q.allQualifier || state.docHeadTokens[docIdx].has(q.head)) {
       const headExtras = state.docHeadExtra[docIdx];
       let headExtra = 0;
       for (let i = 0; i < headExtras.length; i++) {
@@ -1327,9 +1398,12 @@ function search(query, opts) {
     // say "raw", so a raw row is wrong by construction. "roasted brussels
     // sprouts with olive oil" returned "Brussels sprouts, raw" (43) over the
     // cooked-with-fat row (67) only because the raw row is shorter.
-    if (q.hasMethod && !q.wantsRaw && state.docFlags[docIdx].raw) {
+    if (q.hasMethod && !q.wantsRaw && flags.raw) {
       score *= RAW_PENALTY;
     }
+
+    // Layer 12: reduced-calorie variant the query did not ask for.
+    if (flags.dietVariant && !q.wantsDiet) score *= DIET_PENALTY;
 
     // Layer 10: offal / anatomical-part guard. Nobody photographs a plate of
     // chicken skin. Bare "chicken" used to return "Chicken skin" (450 kcal)

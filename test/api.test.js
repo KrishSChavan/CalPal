@@ -340,6 +340,92 @@ test('two-call mode marks the disagreement check as actually run', async () => {
   assert.equal(body.disagreement.checked, true);
 });
 
+/* ------------------------------------------ model override of the DB row */
+
+test("the model's chosen_fdc_id overrides the matcher's row", async () => {
+  /* The matcher lands "white rice" on 56205001 "NS as to fat" (129 kcal). The
+     notes said it was cooked in oil, so the model picks 56205002 (151). The
+     override is the safeguard against a confident wrong match — without it a
+     ~5.7% mismatch rate lands in the total unchallenged. */
+  const call2 = {
+    ...CALL2,
+    components: [
+      { name: 'butter chicken', chosen_fdc_id: null, grams_final: 240, kcal: 257 },
+      { name: 'white rice', chosen_fdc_id: '56205002', grams_final: 160, kcal: 242 },
+      { name: 'zzzz unrecognisable garnish', chosen_fdc_id: null, grams_final: 5, kcal: 12 },
+    ],
+  };
+  vision.setClientFactory(() => scriptedClient(CALL1, call2));
+  const { body } = await postPhoto({ slot: 'dinner', notes: 'rice fried in oil' });
+
+  const rice = body.components.find((c) => c.name === 'white rice');
+  assert.equal(rice.fdcId, '56205002');
+  assert.equal(rice.fdcDescription, 'Rice, white, cooked, made with oil');
+  assert.equal(rice.kcal100, 151, "the model's row must win over the matcher's");
+  assert.ok(Math.abs(rice.kcal - 151 * 1.6) < 0.01);
+
+  // A component the model did not override keeps the matcher's row.
+  const curry = body.components.find((c) => c.name === 'butter chicken');
+  assert.equal(curry.fdcDescription, 'Chicken curry');
+});
+
+test('an unknown fdc id from the model falls back rather than crashing', async () => {
+  const call2 = {
+    ...CALL2,
+    components: [
+      { name: 'butter chicken', chosen_fdc_id: '99999999', grams_final: 240, kcal: 257 },
+      { name: 'white rice', chosen_fdc_id: null, grams_final: 160, kcal: 206 },
+      { name: 'zzzz unrecognisable garnish', chosen_fdc_id: null, grams_final: 5, kcal: 12 },
+    ],
+  };
+  vision.setClientFactory(() => scriptedClient(CALL1, call2));
+  const { res, body } = await postPhoto({ slot: 'dinner' });
+  assert.equal(res.status, 200);
+  const curry = body.components.find((c) => c.name === 'butter chicken');
+  assert.equal(curry.fdcDescription, 'Chicken curry', 'falls back to the matcher');
+});
+
+test('the model receives a shortlist to choose from, not a single verdict', async () => {
+  const client = scriptedClient();
+  vision.setClientFactory(() => client);
+  await postPhoto({ slot: 'dinner' });
+
+  const call2Text = JSON.stringify(client.bodies[1].messages);
+  assert.ok(call2Text.includes('candidates'), 'call 2 must carry the candidate shortlist');
+  // The correct row for "butter chicken" is among them.
+  assert.ok(call2Text.includes('27146150'), 'the matched fdc id should be offered');
+});
+
+test('below-threshold candidates are still offered, flagged as such', async () => {
+  /* "beef lasagna" clears no score floor — FNDDS files it as "Lasagna with
+     meat". Rather than lower the floor (which is what turns "avocado toast"
+     into French toast) the unfiltered candidates go to the model to judge. */
+  const call1 = {
+    ...CALL1,
+    components: [
+      { ...CALL1.components[0], name: 'beef lasagna', search_terms: ['beef lasagna'] },
+    ],
+  };
+  const client = scriptedClient(call1, {
+    ...CALL2,
+    components: [{ name: 'beef lasagna', chosen_fdc_id: null, grams_final: 300, kcal: 400 }],
+  });
+  vision.setClientFactory(() => client);
+  const { res, body } = await postPhoto({ slot: 'dinner' });
+
+  assert.equal(res.status, 200);
+  const sent = JSON.parse(
+    JSON.stringify(client.bodies[1].messages)
+  );
+  const text = JSON.stringify(sent);
+  assert.ok(text.includes('candidates_below_threshold'), 'the model must be told these are unconfirmed');
+
+  // Rejected by the model, so it stays unmatched and keeps the model's number.
+  const item = body.components[0];
+  assert.equal(item.matched, false);
+  assert.equal(item.kcal, 400);
+});
+
 test('health reports the food db and the vision config', async () => {
   const res = await fetch(`${base}/api/health`);
   const body = await res.json();

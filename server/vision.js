@@ -812,6 +812,7 @@ function formatDbRows(dbRows) {
         groups.push({
           component: safeText(g.component || g.name || g.query, 120) || "(unnamed)",
           rows: rows,
+          belowThreshold: g.candidates_below_threshold === true,
         });
       }
     } else {
@@ -841,6 +842,17 @@ function formatDbRows(dbRows) {
         "closest analogue you know, and say so in reconciliation_notes.)"
       );
       continue;
+    }
+    if (g.belowThreshold) {
+      /* The matcher rejected all of these as too weak. They are shown anyway
+         because a rejected candidate still carries information the model can
+         judge — but it must not read them as confirmed matches. */
+      out.push(
+        "  (candidates_below_threshold: NOTHING here scored above the match floor. " +
+        "These are weak guesses, NOT confirmed matches. Accept one only if it is " +
+        "genuinely the same food; otherwise set chosen_fdc_id to null and estimate " +
+        "the kcal yourself.)"
+      );
     }
     for (const r of g.rows) {
       total += 1;
