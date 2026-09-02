@@ -271,10 +271,35 @@ function recomputeDraft() {
   draft.kcalHigh = Math.round(kcal * 1.35);
 }
 
+/* Two different failures wear the same "no match" label, and they need
+   different words. A component the model priced is an unsourced guess; one it
+   didn't is simply missing from the total, and saying "estimated" there would
+   be a lie. */
+function unmatchedNote(components) {
+  const unmatched = components.filter((c) => !c.matched);
+  if (!unmatched.length) return '';
+  const uncounted = unmatched.filter((c) => !(Number(c.kcal) > 0));
+  const estimated = unmatched.filter((c) => Number(c.kcal) > 0);
+
+  const lines = [];
+  if (uncounted.length) {
+    const names = uncounted.map((c) => c.name).join(', ');
+    lines.push(
+      `<strong>${esc(names)}</strong> ${uncounted.length > 1 ? 'were' : 'was'} not found in the database and ${uncounted.length > 1 ? 'are' : 'is'} counting as zero. Type the grams and calories in yourself, or remove ${uncounted.length > 1 ? 'them' : 'it'}.`
+    );
+  }
+  if (estimated.length) {
+    const names = estimated.map((c) => c.name).join(', ');
+    lines.push(
+      `<strong>${esc(names)}</strong> had no database match, so ${estimated.length > 1 ? 'those calories are' : 'that calorie figure is'} the model's guess rather than a looked-up value.`
+    );
+  }
+  return `<div class="notice notice--risk">${lines.join('<br><br>')}</div>`;
+}
+
 function renderConfirm() {
   recomputeDraft();
   const band = confidenceBand(draft.confidence);
-  const unmatched = draft.components.filter((c) => !c.matched).length;
 
   el.confirmBody.innerHTML = `
     <div class="field" style="margin-top:0.5rem;">
@@ -316,11 +341,7 @@ function renderConfirm() {
         below is probably where it went wrong — check the portions.
       </div>` : ''}
 
-    ${unmatched ? `
-      <div class="notice notice--risk">
-        ${unmatched} item${unmatched > 1 ? 's have' : ' has'} no database match, so ${unmatched > 1 ? 'their' : 'its'}
-        calories come from the model's estimate alone. Adjust ${unmatched > 1 ? 'them' : 'it'} if it looks off.
-      </div>` : ''}
+    ${unmatchedNote(draft.components)}
   `;
 
   buildSlotChips($('draftSlot'), draft.slot, (s) => { draft.slot = s; });
@@ -334,7 +355,18 @@ function renderComponents() {
       ? `<span class="tag">FDC ${esc(c.fdcId)}</span><span>${esc(c.fdcDescription)}</span>${
           c.portionHint ? `<span>· ${esc(c.portionHint)}</span>` : ''
         }<span>· ${round(c.kcal100)} kcal/100g</span>`
-      : `<span class="tag tag--nomatch">no match</span><span>model estimate only</span>`;
+      : `<span class="tag tag--nomatch">no match</span><span>${
+          Number(c.kcal) > 0 ? "the model's own guess, not a looked-up value" : 'not counted — enter the calories below'
+        }</span>`;
+
+    /* Grams alone are meaningless without a kcal/100g to multiply them by, so
+       an unmatched component gets a calorie field the user can actually fill. */
+    const kcalField = c.matched
+      ? ''
+      : `<input class="grams-input num" type="number" inputmode="numeric" min="0" step="1"
+                value="${round(c.kcal)}" data-kcalin="${i}" aria-label="Calories in ${esc(c.name)}">
+         <span class="grams-unit">kcal</span>`;
+
     return `
       <div class="component" data-i="${i}">
         <div class="component__name">${esc(c.name)}</div>
@@ -344,6 +376,7 @@ function renderComponents() {
           <input class="grams-input num" type="number" inputmode="numeric" min="0" step="1"
                  value="${round(c.grams)}" data-grams="${i}" aria-label="Grams of ${esc(c.name)}">
           <span class="grams-unit">g</span>
+          ${kcalField}
           <button class="component__drop" data-drop="${i}" type="button">Remove</button>
         </div>
       </div>`;
@@ -353,6 +386,15 @@ function renderComponents() {
     input.oninput = () => {
       const i = Number(input.dataset.grams);
       draft.components[i].grams = Math.max(0, Number(input.value) || 0);
+      recomputeDraft();
+      host.querySelector(`[data-kcal="${i}"]`).textContent = round(draft.components[i].kcal);
+      paintTotal();
+    };
+  }
+  for (const input of host.querySelectorAll('[data-kcalin]')) {
+    input.oninput = () => {
+      const i = Number(input.dataset.kcalin);
+      draft.components[i].kcal = Math.max(0, Number(input.value) || 0);
       recomputeDraft();
       host.querySelector(`[data-kcal="${i}"]`).textContent = round(draft.components[i].kcal);
       paintTotal();

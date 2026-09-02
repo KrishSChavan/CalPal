@@ -11,19 +11,33 @@
  * Record shape: {c, d, cat, k, p, f, cb, po:[[portionDesc, grams], ...]}
  * A null nutrient means USDA ships no value; 0 is a real measured zero.
  *
- * Matching stack (the six layers required by the spec, plus one guard):
- *   1. BM25F (k1=2.5, b=0.75) over description + WWEIA category, with the
- *      description head (text before the first comma) weighted heaviest.
- *   2. Query-coverage factor 0.4 + 0.6*coverage, hard penalty below 50%.
- *   3. Head-noun hard filter: first non-modifier query token MUST appear.
- *   4. Alias table (British / Indian / menu names -> FNDDS vocabulary).
- *   5. Absolute score floor -> [] (explicit NO MATCH).
- *   6. Condiment / dressing / sauce category demotion.
- *   7. Added-fat guard: demote "made with oil" / "fat added" / "from
- *      restaurant" rows when the query gives no fat signal, and prefer
- *      USDA's own "NFS" / "NS as to fat" default rows.
+ * Matching stack -- the six layers required by the spec, plus two guards
+ * that the measured failures demanded:
+ *
+ *   1.  BM25F (k1=2.5, b=0.75) over description + WWEIA category, with the
+ *       description head (text before the first comma) weighted heaviest.
+ *   2.  Query-coverage factor 0.4 + 0.6*coverage, hard penalty below 50%.
+ *   3.  Head-noun hard filter: the first non-modifier query token MUST
+ *       appear in the candidate. This is the safety property of the whole
+ *       module -- it guarantees a matched row actually contains the
+ *       ingredient the vision model named.
+ *   3b. Compound-head bonus: reward candidates whose own description head
+ *       carries the query's trailing noun ("blueberry MUFFIN"). Re-ranks
+ *       only; it can never resurrect a row layer 3 excluded.
+ *   4.  Alias table (British / Indian / menu names -> FNDDS vocabulary).
+ *   5.  Absolute score floor -> [] (explicit NO MATCH).
+ *   6.  Condiment / dressing / sauce category demotion, gated on the query
+ *       naming a dish (so "hummus" still returns hummus).
+ *   7.  Added-fat guard: demote "made with oil" / "fat added" / "from
+ *       restaurant" rows when the query gives no fat signal, and prefer
+ *       USDA's own "NFS" / "NS as to fat" default rows.
+ *   8.  Varietal-specificity penalty: demote candidates carrying a rare
+ *       qualifier, or a dish word, that the query never asked for.
+ *
+ * Known limitations are pinned as explicit tests in food-db.test.js.
  *
  * CommonJS. No network at request time, no build step, no dependencies.
+ * The JSON is read exactly once per process, at load().
  */
 
 const fs = require("fs");
@@ -49,12 +63,47 @@ const COVERAGE_SPAN = 0.6;
 const COVERAGE_HARD_FLOOR = 0.5;
 const COVERAGE_HARD_PENALTY = 0.25;
 
-// Layer 5 -- calibrated against this exact index; see the calibration block
-// in server/food-db.test.js, which asserts the separation still holds.
-const SCORE_FLOOR = 2.0;
+/**
+ * Layer 5 -- absolute score floor, calibrated against THIS index.
+ *
+ * Measured over 44 real food queries and 20 nonsense queries (the sweep is
+ * reproduced as a test in server/food-db.test.js):
+ *
+ *   nonsense, unknown head noun       -> 0.00  (19/20; killed by layer 3
+ *                                              before scoring ever happens)
+ *   real head noun + junk modifiers   -> 0.71 .. 2.21
+ *     ("chicken qqqq zzzz wibble" 0.76, "tea wibble wobble" 1.48,
+ *      "banana xyzzy plumbus" 2.21)
+ *   genuine food queries             -> 4.50 .. 27.4
+ *     (weakest: "spaghetti bolognese" 4.50, p10 6.96, median 11.28)
+ *
+ * So there is an empty band between 2.21 and 4.50. 3.0 is essentially its
+ * geometric midpoint (sqrt(2.21*4.50) = 3.15): it rejects 100% of the
+ * junk band while costing 0 of 44 real queries, and still leaves 33%
+ * headroom below the weakest real query for foods outside the sample.
+ *
+ * Erring high is the right bias here -- a false NO MATCH is cheap (the
+ * caller keeps the vision model's own estimate and can flag it), whereas a
+ * false match silently corrupts the calorie total with no error.
+ */
+const SCORE_FLOOR = 3.0;
 
 // Layer 6
 const CONDIMENT_PENALTY = 0.15;
+
+/**
+ * Layer 3b -- compound-head bonus. In an English compound noun the LAST noun
+ * is the semantic head ("blueberry MUFFIN", "chicken SANDWICH"), but the
+ * first non-modifier token is the safer *hard filter* (research: taking the
+ * last token as head turns "avocado toast" into "French toast"). So we keep
+ * the first-token hard filter and merely reward candidates whose own
+ * description head also contains the query's trailing noun.
+ *
+ * This can only re-rank rows that already passed the hard filter, so it
+ * cannot resurrect "Shrimp toast" for "avocado toast" -- that row never
+ * contained "avocado" and was dropped before scoring.
+ */
+const COMPOUND_HEAD_BONUS = 1.6;
 
 // Layer 7
 const ADDED_FAT_PENALTY = 0.55;
@@ -99,6 +148,7 @@ const MODIFIERS = new Set([
   "stuffed", "grated", "shredded", "sliced", "diced", "chopped", "minced",
   "mashed", "pureed", "whipped", "melted", "warmed", "heated", "reheated",
   "scrambled", "beaten", "seared", "crumbled", "peeled", "unpeeled",
+  "pulled", "shaved", "julienned", "halved", "quartered",
   // form / state
   "skinless", "boneless", "skin", "frozen", "canned", "tinned", "jarred",
   "bottled", "fresh", "dried", "dehydrated", "instant", "prepared",
@@ -193,6 +243,16 @@ const DISH_TOKENS = new Set([
 ]);
 
 /**
+ * WWEIA's bucket for rows that exist only to be used INSIDE a recipe --
+ * "Chicken as ingredient in recipes", "Beef, for use with vegetables",
+ * "Broccoli, cooked, as ingredient". They are short, so BM25 likes them, but
+ * nobody photographs them as a meal. Demoted unless the query says
+ * "ingredient".
+ */
+const INGREDIENT_CATEGORY = "Not included in a food category";
+const INGREDIENT_PENALTY = 0.4;
+
+/**
  * If the query itself asks for a condiment, do not demote condiments.
  */
 const CONDIMENT_QUERY_TOKENS = new Set([
@@ -271,6 +331,13 @@ const ALIASES = [
   { from: "dhal", to: "dal" },
   { from: "channa", to: "chickpeas" },
   { from: "chana", to: "chickpeas" },
+  // "bolognese" is absent from FNDDS entirely, and the head noun "spaghetti"
+  // otherwise drags the query onto "Spaghetti squash, cooked" (a vegetable).
+  // FNDDS files the dish under "Pasta with tomato-based sauce ... and meat".
+  { from: "spaghetti bolognese", to: "pasta tomato based sauce meat" },
+  { from: "spaghetti bolognaise", to: "pasta tomato based sauce meat" },
+  { from: "bolognese", to: "pasta tomato based sauce meat" },
+  { from: "bolognaise", to: "pasta tomato based sauce meat" },
   // common menu phrasings
   { from: "french fry", to: "potato french fries" },
   { from: "fries", to: "potato french fries", unless: ["potato"] },
@@ -345,6 +412,7 @@ const state = {
   docLen: [],          // BM25F weighted length per doc
   docFlags: [],        // {addedFat, defaultRow, noAddedFat, condiment}
   docSpecific: [],     // rare qualifier tokens per doc (layer 8)
+  docHeadTokens: [],   // tokens from the description head (layer 3b)
   postings: new Map(), // term -> Array<[docIdx, weightedTf]>
   byCode: new Map(),   // foodCode -> docIdx
   avgDocLen: 0,
@@ -369,13 +437,19 @@ const RE_ADDED_FAT = new RegExp(
 );
 
 /**
- * USDA's own "I was not told which variant" rows. Deliberately narrow: only
- * ", NFS" and "NS as to fat" count. "NS as to form" does NOT -- e.g.
- * "Broccoli, NS as to form, cooked" is 63 kcal because it averages in
- * fat-added preparations, so treating it as a neutral default would silently
- * inflate a steamed-broccoli estimate by ~50%.
+ * USDA's own "I was not told which variant" rows -- the right pick when the
+ * photo does not reveal the variant.
+ *
+ * Deliberately narrow: ", NFS", "NS as to fat" and "NS as to type" count.
+ * "NS as to FORM" does NOT -- "Broccoli, NS as to form, cooked" is 63 kcal
+ * because it averages in fat-added preparations, so treating it as a neutral
+ * default would silently inflate a steamed-broccoli estimate by ~50%.
+ *
+ * "NS as to <x>" matters for meats: without it "bacon" lands on "Turkey
+ * bacon, cooked" (368 kcal, a short description BM25 favours) instead of
+ * "Bacon, NS as to type of meat, cooked" (484) -- a 24% underestimate.
  */
-const RE_DEFAULT_ROW = /,\s*NFS\b|\bNS as to fat\b/i;
+const RE_DEFAULT_ROW = /,\s*NFS\b|\bNS as to (?!form\b)/i;
 
 /** Explicitly fat-free preparations. */
 const RE_NO_ADDED_FAT = /\bno added fat\b|\bwithout fat\b|\bfat not added\b/i;
@@ -409,6 +483,9 @@ function indexDoc(rec, docIdx) {
     }
   };
 
+  const headTokens = new Set(tokenize(headText));
+  state.docHeadTokens[docIdx] = headTokens;
+
   feed(headText, W_HEAD);
   feed(bodyText, W_BODY);
   feed(rec.cat || "", W_CAT);
@@ -420,6 +497,8 @@ function indexDoc(rec, docIdx) {
     defaultRow: RE_DEFAULT_ROW.test(desc),
     noAddedFat: RE_NO_ADDED_FAT.test(desc),
     condiment: CONDIMENT_CATEGORIES.has(rec.cat),
+    ingredientOnly:
+      rec.cat === INGREDIENT_CATEGORY || /\bas ingredient\b|\bfor use (with|in|on)\b/i.test(desc),
   };
 }
 
@@ -468,6 +547,7 @@ function load() {
   state.docLen = new Array(rows.length);
   state.docFlags = new Array(rows.length);
   state.docSpecific = new Array(rows.length);
+  state.docHeadTokens = new Array(rows.length);
   state.postings = new Map();
   state.byCode = new Map();
 
@@ -512,6 +592,18 @@ function analyzeQuery(query) {
   }
   if (head === null) head = base[0];
 
+  // Layer 3b: the compound's semantic head -- the LAST non-modifier token,
+  // when it differs from the hard-filter head noun. "blueberry muffin" ->
+  // "muffin", "chicken sandwich" -> "sandwich", "caesar salad" -> "salad".
+  let tailHead = null;
+  for (let i = base.length - 1; i >= 0; i--) {
+    if (!MODIFIERS.has(base[i])) {
+      tailHead = base[i];
+      break;
+    }
+  }
+  if (tailHead === head) tailHead = null;
+
   // Derived tokens: gentle cooking methods imply the literal word "cooked".
   const terms = base.slice();
   let impliesCooked = false;
@@ -544,8 +636,10 @@ function analyzeQuery(query) {
     termSet: termSet,
     uniqueTerms: uniqueTerms,
     head: head,
+    tailHead: tailHead,
     wantsFat: wantsFat,
     wantsCondiment: wantsCondiment,
+    wantsIngredient: termSet.has("ingredient"),
     impliesNoFat: impliesNoFat,
     isDish: isDish,
   };
@@ -635,6 +729,13 @@ function search(query, opts) {
     let score = bm25 * (COVERAGE_BASE + COVERAGE_SPAN * coverage);
     if (coverage < COVERAGE_HARD_FLOOR) score *= COVERAGE_HARD_PENALTY;
 
+    // Layer 3b: reward candidates whose own description head carries the
+    // compound's trailing noun ("blueberry MUFFIN" -> "Muffin, blueberry",
+    // not "Blueberries, dried").
+    if (q.tailHead && state.docHeadTokens[docIdx].has(q.tailHead)) {
+      score *= COMPOUND_HEAD_BONUS;
+    }
+
     const flags = state.docFlags[docIdx];
 
     // Layer 6: demote condiment/dressing/sauce rows when the query names a
@@ -642,6 +743,9 @@ function search(query, opts) {
     if (flags.condiment && q.isDish && !q.wantsCondiment) {
       score *= CONDIMENT_PENALTY;
     }
+
+    // Layer 6b: demote recipe-ingredient-only rows.
+    if (flags.ingredientOnly && !q.wantsIngredient) score *= INGREDIENT_PENALTY;
 
     // Layer 7: added-fat guard + USDA default-row preference.
     if (flags.addedFat && !q.wantsFat) score *= ADDED_FAT_PENALTY;

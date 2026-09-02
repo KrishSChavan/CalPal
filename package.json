@@ -10,6 +10,7 @@
     "start": "node index.js",
     "devStart": "nodemon index.js",
     "build:fndds": "node scripts/build-fndds.js",
+    "test:db": "node server/food-db.test.js",
     "test": "node --test \"test/*.test.*\" \"server/*.test.js\"",
     "test:storage": "node --test test/storage.test.mjs",
     "test:api": "node --test test/api.test.js",

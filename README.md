@@ -32,6 +32,14 @@ npm start
 You need one free API key: **https://aistudio.google.com/apikey** (Google AI
 Studio — no credit card). Put it in `.env` as `GEMINI_API_KEY`.
 
+### Request cost
+
+Each analyzed photo costs **two** model requests by default. If this key
+shares a free-tier quota with your other projects, set `RECONCILE=0` to drop
+to one request per photo. You lose the reconciliation pass — worth measuring
+on your own photos, since the published ~12% gain from two-step was measured
+on a model that has since been retired and *reversed* on another.
+
 No food-database key is needed. USDA FNDDS ships in this repo at
 [`data/fndds-lite.json`](data/fndds-lite.json) (5,432 prepared foods, ~1.2 MB,
 public domain / CC0). Nothing is fetched at request time, so there is no

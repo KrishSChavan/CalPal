@@ -269,6 +269,48 @@ test('a photo with no identifiable food returns 422, not an empty meal', async (
   assert.equal(body.error.code, 'no_food');
 });
 
+test('RECONCILE=0 halves the model calls and still returns DB-derived calories', async () => {
+  const client = scriptedClient();
+  vision.setClientFactory(() => client);
+  process.env.RECONCILE = '0';
+  try {
+    const { res, body } = await postPhoto({ slot: 'lunch' });
+    assert.equal(res.status, 200);
+    assert.equal(client.bodies.length, 1, 'only the extraction call should be made');
+
+    // Grams fall back to Call 1's grams_likely, and calories still come from FNDDS.
+    const curry = body.components.find((c) => c.name === 'butter chicken');
+    assert.equal(curry.grams, 240);
+    assert.equal(curry.kcal100, 107);
+    assert.ok(Math.abs(curry.kcal - 256.8) < 0.01);
+
+    /* Call 1 emits grams but no calories, so an unmatched component has no
+       model figure to fall back on and contributes nothing. 463 rather than
+       475 is correct — the garnish's 12 kcal came from Call 2. */
+    const garnish = body.components.find((c) => c.name.startsWith('zzzz'));
+    assert.equal(garnish.matched, false);
+    assert.equal(garnish.kcal, 0, 'an unmatched item must not be invented');
+
+    // No second opinion exists, so the detector must say so rather than pass.
+    assert.equal(body.disagreement.checked, false);
+    assert.equal(body.disagreement.flagged, false);
+    assert.equal(body.disagreement.modelKcal, null);
+    assert.equal(body.disagreement.dbKcal, 463);
+
+    // Confidence falls back to the mean of Call 1's per-component scores.
+    assert.ok(body.confidence > 0 && body.confidence < 1, `got ${body.confidence}`);
+    assert.equal(body.slot, 'lunch');
+  } finally {
+    delete process.env.RECONCILE;
+  }
+});
+
+test('two-call mode marks the disagreement check as actually run', async () => {
+  vision.setClientFactory(() => scriptedClient());
+  const { body } = await postPhoto({ slot: 'dinner' });
+  assert.equal(body.disagreement.checked, true);
+});
+
 test('health reports the food db and the vision config', async () => {
   const res = await fetch(`${base}/api/health`);
   const body = await res.json();

@@ -19,6 +19,11 @@ app.use(express.static(path.join(__dirname, 'public')));
    JPEG before upload, so there is nothing worth spooling — and nothing to
    clean up, which is where the old `fs.unlinkSync` in a finally block could
    throw over a file that was never written. */
+/* One request per photo instead of two when disabled. See the RECONCILE note
+   on the second vision call below. Read per-request rather than at boot so it
+   is testable and so a config change needs no code path of its own. */
+const reconcileEnabled = () => process.env.RECONCILE !== '0';
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024, files: 1 },
@@ -135,10 +140,18 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
 
     /* Call 2 — reconcile the estimate against the retrieved rows, with the
        image still in the request. Feeding only the list is measurably worse
-       (53.3 vs 66.5 kcal MAE), so the photo goes back in. */
-    const call2 = await vision.reconcile({ imageDataUrl, call1, dbRows });
+       (53.3 vs 66.5 kcal MAE), so the photo goes back in.
 
-    const finals = Array.isArray(call2.components) ? call2.components : [];
+       Set RECONCILE=0 to skip it. That halves requests per photo, which is the
+       difference that matters on a shared free-tier quota. The published gain
+       from two-step is ~12%, but it was measured on a paid model that has since
+       been retired and it REVERSED on a Qwen model — so it is worth measuring
+       on your own photos rather than assuming. */
+    const call2 = reconcileEnabled()
+      ? await vision.reconcile({ imageDataUrl, call1, dbRows })
+      : null;
+
+    const finals = call2 && Array.isArray(call2.components) ? call2.components : [];
 
     const out = matched.map(({ component, row }, i) => {
       const final = finals[i] || {};
@@ -164,23 +177,40 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     });
 
     const dbKcal = out.reduce((s, c) => s + (Number(c.kcal) || 0), 0);
-    const modelKcal = Number(call2.kcal_likely) || 0;
-    const mean = (dbKcal + modelKcal) / 2;
-    const flagged = mean > 0 && Math.abs(dbKcal - modelKcal) / mean > 0.35;
+
+    /* With one call there is no second opinion to disagree with, so the
+       detector reports itself inactive rather than quietly passing. */
+    let disagreement = { dbKcal: Math.round(dbKcal), modelKcal: null, flagged: false, checked: false };
+    if (call2) {
+      const modelKcal = Number(call2.kcal_likely) || 0;
+      const mean = (dbKcal + modelKcal) / 2;
+      disagreement = {
+        dbKcal: Math.round(dbKcal),
+        modelKcal: Math.round(modelKcal),
+        flagged: mean > 0 && Math.abs(dbKcal - modelKcal) / mean > 0.35,
+        checked: true,
+      };
+    }
+
+    /* Call 1 scores every component, and averaging those is the only
+       confidence signal left when the reconciliation pass is switched off. */
+    const call1Confidence = components.length
+      ? components.reduce((a, c) => a + (Number(c.confidence) || 0), 0) / components.length
+      : null;
 
     res.json({
       ok: true,
       dishName: call1.dish_name || 'Meal',
       cuisine: call1.cuisine || null,
       cookingMethod: call1.cooking_method || null,
-      slot: slot || call2.meal_slot || null,
+      slot: slot || call2?.meal_slot || null,
       components: out,
-      confidence: Number(call2.overall_confidence) || null,
-      clarifyingQuestion: call2.clarifying_question || null,
-      reconciliation: call2.reconciliation_notes || null,
+      confidence: (call2 ? Number(call2.overall_confidence) : call1Confidence) || null,
+      clarifyingQuestion: call2?.clarifying_question || null,
+      reconciliation: call2?.reconciliation_notes || null,
       /* The model's own total is never shown as the answer — it exists only
          to catch a component list that went wrong. */
-      disagreement: { dbKcal: Math.round(dbKcal), modelKcal: Math.round(modelKcal), flagged },
+      disagreement,
     });
   } catch (err) {
     const code = err && err.code;
