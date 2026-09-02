@@ -377,14 +377,56 @@ test("layer 7: added-fat rows are avoided unless the query mentions fat", functi
 });
 
 test("layer 8: varietal qualifiers the query never asked for are demoted", function () {
-  const descs = descriptions("broccoli, steamed", 3);
-  for (const d of descs) {
+  // The invariant is the one this test has always named: a distinct VARIETY
+  // must never outrank a plain-broccoli row. It is asserted directly here.
+  //
+  // It used to be asserted indirectly, as "no variety in the top 3". That
+  // window was incidental: slot 3 was held by "Broccoli, FROZEN, cooked",
+  // which layer 8b now correctly demotes because the query never said
+  // "frozen". Freeing that slot moved "Broccoli, Chinese" from rank 4 to
+  // rank 3 without it gaining a single point, so the window assertion
+  // started failing while the actual invariant still held. Assert the
+  // invariant, not the window.
+  const broc = db.search("broccoli, steamed", { limit: 8 });
+  const isVariety = function (r) { return /chinese|raab/i.test(r.description); };
+  // "Plain" means plain in the sense the QUERY asked for: fresh broccoli,
+  // cooked, nothing added. Rows carrying a qualifier the query never
+  // mentioned -- frozen, canned, from restaurant, fat added -- are
+  // deliberately excluded. Those are demoted by layers 8b and 7 for exactly
+  // the same reason layer 8 demotes a variety, so they sit at parity with
+  // the variety rows and their relative order is decided by BM25 alone.
+  // Asserting a strict ordering between two rows that the query has already
+  // ruled out would be asserting noise, not behaviour.
+  const isPlain = function (r) {
+    return /^Broccoli,/i.test(r.description) && !isVariety(r) &&
+      !/cauliflower|carrot|frozen|canned|restaurant|fat added|with oil|with butter/i
+        .test(r.description);
+  };
+  const plain = broc.filter(isPlain);
+  const varieties = broc.filter(isVariety);
+  assert.ok(plain.length >= 2, "expected several plain broccoli rows");
+  for (const v of varieties) {
+    for (const p of plain) {
+      assert.ok(
+        v.score < p.score,
+        'a distinct variety ("' + v.description + '") outranked plain ' +
+          'broccoli ("' + p.description + '")'
+      );
+    }
     assert.ok(
-      d.indexOf("chinese") === -1 && d.indexOf("raab") === -1,
-      'a distinct variety ("Chinese broccoli", "broccoli raab") outranked ' +
-        "plain broccoli: " + d
+      v.score < broc[0].score * 0.85,
+      'the varietal penalty must leave a clear gap: "' + v.description +
+        '" scored ' + v.score + ' against a top hit of ' + broc[0].score
     );
   }
+  // The top hit is still the plain, no-added-fat row at the right energy.
+  assertKcalNear(broc[0], 41, 3, "broccoli, steamed");
+  // Regression guard for the demotion that freed slot 3: an unrequested
+  // processing qualifier ("frozen") must not beat the fresh row.
+  const frozen = broc.findIndex(function (r) { return /frozen/i.test(r.description); });
+  const fresh = broc.findIndex(function (r) { return /fresh/i.test(r.description); });
+  assert.ok(fresh !== -1 && (frozen === -1 || fresh < frozen),
+    "an unrequested 'frozen' row must not outrank the fresh row");
   // A variety may still appear further down the list (the reconciliation
   // step sees all of them), but it must never outrank the plain row.
   const rice = db.search("white rice, boiled", { limit: 5 });
@@ -419,43 +461,63 @@ test("layer 3b: compound nouns resolve to the trailing noun's food", function ()
  * Known limitations -- pinned deliberately, so a future change is noticed
  * ------------------------------------------------------------------ */
 
-test("KNOWN LIMITATION: no FNDDS row for a variety -> match falls back to the qualifier", function () {
-  // FNDDS ships no "Muffin, blueberry" row (it has Muffin NFS/fruit/chocolate
-  // chip/oatmeal/... but no blueberry one). The head-noun hard filter then
-  // requires "blueberry", and the best row containing it is a berry, not a
-  // baked good. The honest answer would be "Muffin, fruit" (375 kcal); we
-  // return "Blueberries, dried" (317 kcal) instead.
+test("FIXED (was a known limitation): a fruit-flavoured baked good resolves to the baked good", function () {
+  // FNDDS ships no "Muffin, blueberry" row. This used to return
+  // "Blueberries, dried" (317 kcal of dried fruit) because the head-noun
+  // hard filter bound to "blueberry".
   //
-  // This is NOT fixed by relaxing the filter to the trailing noun: that is
-  // precisely what would resurrect "French toast" for "avocado toast", which
-  // research pinned as a must-not. The hard filter is kept absolute because
-  // it is the property that guarantees a matched row actually contains the
-  // ingredient the vision model named.
+  // Fixed by FLAVOR_HEADS: a fruit-flavour word is a modifier of the food
+  // noun, so it is skipped when CHOOSING the head noun (it still scores).
+  // The head noun becomes "muffin" and the answer is a muffin.
+  //
+  // This is NOT the same as relaxing the filter to the trailing noun -- the
+  // fix is lexical and narrow, so "avocado toast" still cannot reach
+  // "French toast": "avocado" is a food, not a flavour word, and stays the
+  // head. That guarantee is re-asserted below.
   const hit = top("blueberry muffin");
-  assert.ok(hit, "still returns something rather than NO MATCH");
-  assert.ok(
-    hit.description.toLowerCase().indexOf("blueberr") !== -1,
-    "documented behaviour: the qualifier wins when the variety is absent"
-  );
+  assert.ok(hit, "expected a match");
+  assert.match(hit.description, /^Muffin/i,
+    "the head noun must be the baked good, not the fruit");
+  assertKcalNear(hit, 375, 30, "blueberry muffin");
+  for (const d of descriptions("blueberry pancakes", 3)) {
+    assert.ok(d.indexOf("pancake") !== -1,
+      "blueberry pancakes must return pancakes, got: " + d);
+  }
+  // The avocado-toast guarantee is untouched.
+  for (const d of descriptions("avocado toast", 5)) {
+    assert.ok(d.indexOf("avocado") !== -1,
+      "a real ingredient must still be an absolute head-noun filter: " + d);
+  }
 });
 
-test("KNOWN LIMITATION: a bare meat noun can land on a short anatomical row", function () {
-  // "chicken" alone returns "Chicken skin" (450 kcal). USDA's real default is
-  // "Chicken, NS as to part and cooking method, NS as to skin eaten" (164),
-  // but that description is ~12 tokens long and BM25's length normalisation
-  // (b=0.75) strongly favours the 2-token row. Raising the default-row bonus
-  // enough to overcome it would distort every other ranking.
+test("layer 10: a bare meat noun does not land on an anatomical row", function () {
+  // "chicken" alone used to return "Chicken skin" (450 kcal) -- a 2.7x
+  // overestimate against USDA's own default, "Chicken, NS as to part and
+  // cooking method, NS as to skin eaten" (164 kcal).
   //
-  // Impact is limited because the vision model emits descriptive component
-  // phrases, not bare nouns -- and those all resolve correctly:
+  // Layer 10 (the offal/anatomical-part guard) fixes the energy figure: a
+  // candidate naming a body part the query never asked for is demoted, so
+  // bare "chicken" now lands on a 164 kcal whole-meat row.
+  //
+  // What is still NOT fixed is reaching that specific NS-as-to-part row:
+  // its description is ~12 tokens and BM25's length normalisation (b=0.75)
+  // keeps favouring short rows. The energy value is right, the row identity
+  // is a near-miss. Pinned by kcal, not by description, so the thing that
+  // actually matters to a calorie total is what is guarded.
+  const bare = top("chicken");
+  assert.ok(bare, "bare 'chicken' must resolve");
+  assert.ok(
+    !/\bskin\b|\btail\b|\bback\b|\bneck\b|\bgizzard\b|\bliver\b/i.test(bare.description),
+    "bare 'chicken' must not land on an anatomical-part row, got: " + bare.description
+  );
+  assertKcalNear(bare, 164, 40, "bare chicken");
+  // Descriptive phrases -- what the pipeline actually emits -- all resolve:
   assert.match(top("grilled chicken breast").description, /^Chicken breast/);
   assert.strictEqual(top("butter chicken").description, "Chicken curry");
   assert.match(top("fried chicken").description, /chicken/i);
-  // Sibling bare nouns DO resolve correctly, via the ingredient-row demotion:
+  // Sibling bare nouns, via the ingredient-row demotion:
   assert.strictEqual(top("beef").description, "Beef, NFS");
   assert.strictEqual(top("pork").description, "Pork, NFS");
-  // Pinned so a future change to the ranking is noticed rather than silent:
-  assert.strictEqual(top("chicken").description, "Chicken skin");
 });
 
 test("layer 6b: recipe-ingredient-only rows are demoted", function () {

@@ -11,28 +11,48 @@
  * Record shape: {c, d, cat, k, p, f, cb, po:[[portionDesc, grams], ...]}
  * A null nutrient means USDA ships no value; 0 is a real measured zero.
  *
- * Matching stack -- the six layers required by the spec, plus two guards
- * that the measured failures demanded:
+ * Matching stack. Layers 1-8 are the spec's; 8b onwards were added after an
+ * adversarial pass measured a 13.6% wrong-answer rate on realistic
+ * vision-model output (see food-db.adversarial.test.js, which pins every
+ * case below as a regression test):
  *
  *   1.  BM25F (k1=2.5, b=0.75) over description + WWEIA category, with the
  *       description head (text before the first comma) weighted heaviest.
- *   2.  Query-coverage factor 0.4 + 0.6*coverage, hard penalty below 50%.
- *   3.  Head-noun hard filter: the first non-modifier query token MUST
- *       appear in the candidate. This is the safety property of the whole
- *       module -- it guarantees a matched row actually contains the
- *       ingredient the vision model named.
+ *   2.  Weighted query-coverage factor 0.4 + 0.6*coverage, hard penalty
+ *       below 34%. Size/cut/doneness modifiers carry reduced weight -- their
+ *       absence from a row is not evidence against it -- but COOKING METHODS
+ *       carry full weight, because method discrimination is the whole reason
+ *       this project uses FNDDS.
+ *   2b. Unknown-vocabulary penalty: the share of the query the index has
+ *       never seen. This, not low coverage, is the real junk signal.
+ *   3.  Head-noun hard filter: the first query token that is not a modifier,
+ *       a flavour/sauce word, or a brand name MUST appear in the candidate's
+ *       DESCRIPTION (not its category -- the category leaked head nouns into
+ *       rows that do not contain them). This is the safety property of the
+ *       whole module: a matched row really does contain the named food.
  *   3b. Compound-head bonus: reward candidates whose own description head
- *       carries the query's trailing noun ("blueberry MUFFIN"). Re-ranks
- *       only; it can never resurrect a row layer 3 excluded.
+ *       carries the query's trailing noun ("blueberry MUFFIN").
  *   4.  Alias table (British / Indian / menu names -> FNDDS vocabulary).
+ *   4b. Token expansions ("skinless" -> "skin not eaten"), additive.
  *   5.  Absolute score floor -> [] (explicit NO MATCH).
  *   6.  Condiment / dressing / sauce category demotion, gated on the query
  *       naming a dish (so "hummus" still returns hummus).
- *   7.  Added-fat guard: demote "made with oil" / "fat added" / "from
- *       restaurant" rows when the query gives no fat signal, and prefer
- *       USDA's own "NFS" / "NS as to fat" default rows.
+ *   6b. Recipe-ingredient-only row demotion.
+ *   7.  Added-fat guard + USDA default-row preference.
  *   8.  Varietal-specificity penalty: demote candidates carrying a rare
  *       qualifier, or a dish word, that the query never asked for.
+ *   8b. Processing-qualifier penalty: an unrequested "dried"/"canned"/
+ *       "frozen" is worth up to 5x on energy density all by itself.
+ *   8c. Different-food penalty: unmatched identity nouns in the candidate's
+ *       pre-comma head, gated on the head noun being in that same head.
+ *   9.  Raw-row guard: the query named a cooking method and did not say raw.
+ *   10. Offal / anatomical-part guard: nobody photographs chicken skin.
+ *   11. Dish-form coverage: the query named a dish the candidate is not.
+ *       Harsher when the head noun is a one-row homograph ("poke").
+ *
+ * Failing closed is always preferred to a confident wrong number: the caller
+ * keeps the vision model's own estimate, which is a visible fallback rather
+ * than a silent corruption of the total.
  *
  * Known limitations are pinned as explicit tests in food-db.test.js.
  *
@@ -60,8 +80,23 @@ const W_CAT = 0.6; // WWEIA category
 // Layer 2
 const COVERAGE_BASE = 0.4;
 const COVERAGE_SPAN = 0.6;
-const COVERAGE_HARD_FLOOR = 0.5;
-const COVERAGE_HARD_PENALTY = 0.25;
+/**
+ * Layer 2 -- coverage.
+ *
+ * The hard penalty was 0.25 below 50% coverage, which was far too harsh once
+ * the query is at all descriptive. Measured cases where the CORRECT row was
+ * already ranked #1 and was killed only by this penalty:
+ *
+ *   "cheeseburger with lettuce and tomato" -> Cheeseburger, NFS   scored 1.44
+ *   "deep fried breaded cod fillet"        -> Fish, cod, fried    scored 2.06
+ *
+ * Both are exactly what a vision model emits, and both returned NO MATCH.
+ * The junk rejection this penalty was doing is now carried by
+ * UNKNOWN_TERM_PENALTY, which keys on vocabulary the index has never seen
+ * rather than on the query merely being wordy.
+ */
+const COVERAGE_HARD_FLOOR = 0.34;
+const COVERAGE_HARD_PENALTY = 0.55;
 
 /**
  * Layer 5 -- absolute score floor, calibrated against THIS index.
@@ -87,6 +122,9 @@ const COVERAGE_HARD_PENALTY = 0.25;
  * false match silently corrupts the calorie total with no error.
  */
 const SCORE_FLOOR = 3.0;
+
+/** Hard cap on opts.limit, so a bad caller cannot ask for a huge slice. */
+const MAX_LIMIT = 200;
 
 // Layer 6
 const CONDIMENT_PENALTY = 0.15;
@@ -119,6 +157,73 @@ const NO_ADDED_FAT_BONUS = 1.15;
 // two groups cleanly, and modifiers/structural words are excluded outright.
 const SPECIFIC_DF_MAX = 120;
 const SPECIFICITY_PENALTY = 0.35;
+
+/**
+ * Layer 8c -- unmatched food nouns in the candidate's pre-comma head.
+ * See the comment at the use site; FNDDS's comma convention makes this a
+ * reliable "different food" signal rather than a "narrower food" one, so it
+ * is penalised harder than a varietal qualifier.
+ */
+const HEAD_EXTRA_PENALTY = 0.6;
+
+/** Layer 10 -- anatomical part the query did not ask for. */
+const OFFAL_PENALTY = 0.3;
+
+/**
+ * Layer 11 -- the query named a dish form the candidate is not.
+ * Deliberately severe: when the named dish does not exist in FNDDS, a
+ * NO MATCH is worth far more than a same-ingredient row of a different form.
+ */
+const DISH_MISS_PENALTY = 0.4;
+
+/**
+ * Layer 11b -- the head noun matched only a handful of rows AND the query's
+ * dish form is absent. See the use site: this is the homograph case.
+ */
+const RARE_HEAD_DF = 2;
+const DISH_MISS_RARE_PENALTY = 0.12;
+
+/**
+ * Layer 2b -- fraction of the query that is vocabulary the index has never
+ * seen. This, not low coverage, is what actually distinguishes junk
+ * ("chicken qqqq zzzz wibble", 3/4 unknown) from a wordy real query
+ * ("cheeseburger with lettuce and tomato", 0/3 unknown). Splitting the two
+ * is what let COVERAGE_HARD_PENALTY be relaxed from 0.25 to a value that
+ * does not destroy correct generic rows.
+ */
+const UNKNOWN_TERM_PENALTY = 0.85;
+
+/**
+ * Layer 2 -- weight of a preparation modifier in the coverage denominator.
+ * See the use site: a modifier is a hint, not a required ingredient.
+ */
+const MODIFIER_COVERAGE_WEIGHT = 0.35;
+
+/**
+ * Which modifiers get the reduced coverage weight. Deliberately NOT all of
+ * them: a COOKING METHOD must keep full weight, because discriminating
+ * boiled / fried / restaurant preparations is the entire reason this project
+ * uses FNDDS rather than a generic food table. Discounting methods regressed
+ * "fried rice with egg" to "Rice, cooked, NFS" (129 vs the correct 174) and
+ * "scrambled eggs cooked with butter" to a FRIED egg row.
+ *
+ * Only size, cut, doneness and presentation words are discounted -- words
+ * FNDDS simply does not record, so their absence from a row is not evidence
+ * against it.
+ */
+const WEAK_MODIFIERS = new Set([
+  "small", "medium", "large", "extra", "big", "little", "thin", "thick",
+  "whole", "half", "quarter", "single", "double", "regular", "lightly",
+  "heavily", "approximately", "about", "roughly", "some", "assorted",
+  "serving", "portion", "piece", "pieces", "side", "plate", "rare", "cut",
+  "cuts", "trimmed", "well", "done", "sized", "generous", "heaping",
+  "handful", "bunch", "slab", "slice", "slices", "sliced", "diced",
+  "chopped", "minced", "grated", "shredded", "julienned", "halved",
+  "quartered", "shaved", "crumbled", "freshly", "day", "classic",
+  "traditional", "authentic", "homestyle", "style", "fresh", "leftover",
+  "cold", "hot", "warm", "chilled", "ripe", "unripe", "juicy", "tender",
+  "crispy", "crisp", "soft", "organic",
+]);
 
 /* ------------------------------------------------------------------ *
  * Vocabulary
@@ -174,6 +279,11 @@ const MODIFIERS = new Set([
   "seasoned", "unseasoned", "homestyle", "classic", "traditional",
   "authentic", "style", "sized", "generous", "heaping", "handful", "bunch",
   "slab", "slice", "slices", "chop", "chops",
+  // Meal occasions. Never the identity of a food, but FNDDS does have
+  // "Breakfast bar" / "Breakfast pastry" rows, so taking "breakfast" as the
+  // head noun sent "breakfast sausage patty" to "Breakfast bar, NFS" (376).
+  "breakfast", "lunch", "dinner", "brunch", "supper",
+  "appetizer", "starter", "course", "helping", "leftovers",
   // Colours. These qualify a food, they never name one, so they must not be
   // taken as the head noun: without this, "black coffee" picks head "black"
   // and lands on "Black beans, NFS". They still take part in BM25 and
@@ -216,6 +326,13 @@ const FLAVOR_HEADS = new Set([
   "buttermilk", "balsamic", "chipotle", "sesame", "ginger", "garlic",
   "blueberry", "strawberry", "raspberry", "blackberry", "cranberry",
   "caramel", "vanilla", "cinnamon", "toffee", "praline",
+  // Condiment CLASS nouns. "tartar sauce cod" took head noun "sauce" (the
+  // flavour word "tartar" was already skipped) and returned Tartar sauce.
+  // When the query is only about the condiment ("barbecue sauce") the
+  // all-flavour fallback in analyzeQuery puts the head back on the first
+  // token, so those still resolve.
+  "sauce", "dressing", "dip", "gravy", "marinade", "glaze", "seasoning",
+  "spice", "rub", "relish", "chutney", "salsa", "syrup", "condiment",
 ]);
 
 /**
@@ -357,6 +474,13 @@ const DISH_TOKENS = new Set([
   "casserole", "dish", "meal", "entree", "fries", "sub", "melt", "bake",
   "pie", "stirfry", "omelet", "omelette", "quesadilla", "lasagna",
   "risotto", "paella", "chili", "gumbo", "hash", "skillet",
+  // Added by the adversarial pass. Without "chowder", "Clams, NFS" (143)
+  // beat "Soup, New England clam chowder" (93); without "enchilada",
+  // "cheese enchiladas" returned "Cheese, NFS" (381) -- more than double.
+  "chowder", "bisque", "broth", "enchilada", "tostada", "pancake",
+  "waffle", "muffin", "bagel", "croissant", "doughnut", "donut", "pretzel",
+  "cookie", "brownie", "cupcake", "pudding", "smoothie", "shake", "kabob",
+  "skewer", "dumpling", "wonton", "curry", "biryani", "congee", "pho",
 ]);
 
 /**
@@ -498,6 +622,28 @@ const ALIASES = [
   { from: "gammon", to: "ham" },
   { from: "candy floss", to: "cotton candy" },
   { from: "ice lolly", to: "popsicle" },
+  // "popper" is absent from FNDDS; the dish is "Stuffed jalapeno pepper".
+  { from: "poppers", to: "stuffed" },
+  { from: "popper", to: "stuffed" },
+  // "cherry"/"grape" as a tomato SIZE, not the fruit. Unaliased, the head
+  // noun was "cherry" and "cherry tomatoes" returned "Cherries, dried"
+  // (333 kcal) for a 20 kcal food -- a 16x error.
+  { from: "cherry tomatoes", to: "tomatoes raw" },
+  { from: "cherry tomato", to: "tomatoes raw" },
+  { from: "grape tomatoes", to: "tomatoes raw" },
+  { from: "grape tomato", to: "tomatoes raw" },
+  { from: "plum tomatoes", to: "tomatoes raw" },
+  // Absent from FNDDS as written; the verified target is in parentheses.
+  // FNDDS has no spring-roll row; its nearest analogue is the meatless egg
+  // roll. Aliasing to bare "egg roll" was worse than nothing -- head noun
+  // "egg" landed on "Roll, egg bread" (287 kcal, a bread).
+  { from: "spring rolls", to: "egg roll meatless" },
+  { from: "spring roll", to: "egg roll meatless" },
+  { from: "cornflakes", to: "cereal corn flakes" },  // Cereal, corn flakes
+  { from: "corn flakes", to: "cereal corn flakes" },
+  { from: "skewers", to: "shish kabob" },            // ... shish kabob ...
+  { from: "skewer", to: "shish kabob" },
+  { from: "satay", to: "shish kabob" },
 ];
 
 /**
@@ -527,6 +673,13 @@ const EXPANSIONS = new Map([
   ["stirfry", ["stir", "fried"]],
   ["stirfried", ["stir", "fried"]],
   ["rotisserie", ["roasted"]],
+  // FNDDS has no "wrap" category; it files them as sandwiches, so demanding
+  // the literal token left "falafel wrap" scoring 0.81 against "Falafel
+  // sandwich" (265 kcal), which is exactly the right row.
+  ["wrap", ["wrap", "sandwich"]],
+  ["sub", ["sub", "sandwich"]],
+  ["hoagie", ["sub", "sandwich"]],
+  ["baguette", ["bread", "french"]],
   ["broiled", ["baked", "broiled"]],
   ["barbecued", ["barbecue"]],
   ["grilled", ["grilled", "broiled"]],
@@ -582,6 +735,17 @@ function singularize(t) {
   if (/[^aeiou]ies$/.test(t)) return t.slice(0, -3) + "y";
   if (/(ches|shes|sses|xes|zes)$/.test(t)) return t.slice(0, -2);
   if (/(ss|us|is|ous)$/.test(t)) return t;
+  // "-oes" plurals. Stripping only the trailing "s" produced "potatoe" and
+  // "tomatoe", neither of which equals FNDDS's own "potato"/"tomato", so the
+  // head-noun hard filter EXCLUDED every correct row: "boiled white
+  // potatoes" could only reach "Stewed potatoes" (the one row whose text is
+  // also plural), and any query naming tomatoes was similarly cut off from
+  // the Tomatoes rows. "shoes"/"canoes" keep the e, but neither is a food.
+  if (/[^aeiou]oes$/.test(t)) return t.slice(0, -2);
+  // "-ves" plurals: loaves -> loaf, halves -> half, leaves -> leaf.
+  // "olives"/"chives" are not plurals of an -f word, so they are excluded by
+  // requiring a consonant or "a"/"l" before the "ves".
+  if (/(l|a|r)ves$/.test(t)) return t.slice(0, -3) + "f";
   if (/s$/.test(t)) return t.slice(0, -1);
   return t;
 }
@@ -629,6 +793,10 @@ const state = {
   docLen: [],          // BM25F weighted length per doc
   docFlags: [],        // {addedFat, defaultRow, noAddedFat, condiment}
   docSpecific: [],     // rare qualifier tokens per doc (layer 8)
+  docProcess: [],      // processing qualifiers per doc (layer 8b)
+  docHeadExtra: [],    // food nouns in the pre-comma head (layer 8c)
+  docParts: [],        // anatomical / offal parts per doc (layer 10)
+  docDescTokens: [],   // description-only tokens, for the layer 3 filter
   docHeadTokens: [],   // tokens from the description head (layer 3b)
   postings: new Map(), // term -> Array<[docIdx, weightedTf]>
   byCode: new Map(),   // foodCode -> docIdx
@@ -703,13 +871,44 @@ function indexDoc(rec, docIdx) {
   const headTokens = new Set(tokenize(headText));
   state.docHeadTokens[docIdx] = headTokens;
 
+  // Layer 8c: food nouns carried by the description head. Modifiers,
+  // structural filler and flavour words are excluded -- only an extra
+  // *identity* noun means a different food.
+  const headExtra = [];
+  for (const t of headTokens) {
+    if (MODIFIERS.has(t) || STRUCTURAL.has(t) || FLAVOR_HEADS.has(t)) continue;
+    if (OFFAL_PARTS.has(t)) continue; // handled by layer 10
+    headExtra.push(t);
+  }
+  state.docHeadExtra[docIdx] = headExtra;
+
   feed(headText, W_HEAD);
   feed(bodyText, W_BODY);
+  // Snapshot the DESCRIPTION-only vocabulary before the category is folded
+  // in. The layer 3 hard filter must use this, not the combined set: the
+  // WWEIA category leaked head nouns into rows that do not contain them, so
+  // "bagel with cream cheese" matched "Muffin, English, cheese" -- a row
+  // with no "bagel" in its description at all, admitted purely because its
+  // category is "Bagels and English muffins". That silently broke the one
+  // guarantee this module makes about a matched row.
+  state.docDescTokens[docIdx] = new Set(tokenSet);
   feed(rec.cat || "", W_CAT);
 
   state.docTokens[docIdx] = tokenSet;
   state.docLen[docIdx] = len;
+
+  // Layer 8b / layer 10 lists.
+  const proc = [];
+  const parts = [];
+  for (const t of tokenSet) {
+    if (PROCESS_QUALIFIERS.has(t)) proc.push(t);
+    if (OFFAL_PARTS.has(t)) parts.push(t);
+  }
+  state.docProcess[docIdx] = proc;
+  state.docParts[docIdx] = parts;
+
   state.docFlags[docIdx] = {
+    raw: RE_RAW_ROW.test(desc),
     addedFat: RE_ADDED_FAT.test(desc),
     defaultRow: RE_DEFAULT_ROW.test(desc),
     noAddedFat: RE_NO_ADDED_FAT.test(desc),
@@ -729,6 +928,7 @@ function buildSpecificity() {
     const specific = [];
     for (const t of state.docTokens[i]) {
       if (MODIFIERS.has(t) || STRUCTURAL.has(t)) continue;
+      if (PROCESS_QUALIFIERS.has(t)) continue; // counted once, by layer 8b
       // A rare qualifier ("Chinese", "glutinous") OR a dish word the query
       // never asked for ("Salmon SALAD" for "salmon fillet", "Shrimp SALAD"
       // for "prawn curry") both mean the candidate is a narrower or more
@@ -764,6 +964,10 @@ function load() {
   state.docLen = new Array(rows.length);
   state.docFlags = new Array(rows.length);
   state.docSpecific = new Array(rows.length);
+  state.docProcess = new Array(rows.length);
+  state.docHeadExtra = new Array(rows.length);
+  state.docParts = new Array(rows.length);
+  state.docDescTokens = new Array(rows.length);
   state.docHeadTokens = new Array(rows.length);
   state.postings = new Map();
   state.byCode = new Map();
@@ -846,12 +1050,36 @@ function analyzeQuery(query) {
   const termSet = new Set(terms);
   const uniqueTerms = Array.from(termSet);
 
-  // Brand tokens are excluded from the coverage denominator: an unknown
-  // chain name must not read as a missing ingredient. They stay in
-  // uniqueTerms so BM25 can still reward a genuinely branded FNDDS row.
-  const coverageTerms = uniqueTerms.filter(function (t) {
-    return !BRAND_TOKENS.has(t);
+  /**
+   * Coverage denominator. Everything here still takes part in BM25 -- this
+   * only decides what counts as "the query asked for N things".
+   *
+   *  - Derived tokens (the implied "cooked", the EXPANSIONS output) are not
+   *    things the user said, so counting them inflated the denominator and
+   *    pushed correct rows under the coverage penalty. "medium rare grilled
+   *    ribeye steak" scored 2.83 with the right row already ranked #1.
+   *  - Brand names: an unknown chain must not read as a missing ingredient.
+   *  - Flavour words: "honey mustard chicken" is one food with two
+   *    seasonings, not three ingredients, and demanding a row match all
+   *    three left the whole query under the floor at 1.47.
+   */
+  const derived = new Set();
+  if (impliesCooked) derived.add("cooked");
+  for (let i = 0; i < base.length; i++) {
+    const ex = EXPANSIONS.get(base[i]);
+    if (!ex) continue;
+    for (let j = 0; j < ex.length; j++) {
+      if (base.indexOf(ex[j]) === -1) derived.add(ex[j]);
+    }
+  }
+  let coverageTerms = uniqueTerms.filter(function (t) {
+    return !BRAND_TOKENS.has(t) && !FLAVOR_HEADS.has(t) && !derived.has(t);
   });
+  // A query that is ENTIRELY flavour or brand words ("salsa", "barbecue
+  // sauce", "Starbucks") would otherwise be left with an empty denominator,
+  // scoring coverage 0 and taking the hard penalty -- "salsa" scored 2.59
+  // and returned NO MATCH even though "Salsa, NFS" is an exact row.
+  if (coverageTerms.length === 0) coverageTerms = uniqueTerms.slice();
 
   let wantsFat = false;
   let wantsCondiment = false;
@@ -931,9 +1159,24 @@ function shape(rec, score) {
  */
 function search(query, opts) {
   ensureLoaded();
-  const limit = Math.max(1, (opts && opts.limit) || 5);
-  const floor =
-    opts && typeof opts.minScore === "number" ? opts.minScore : SCORE_FLOOR;
+  // Both options are clamped to finite values. `minScore: NaN` used to
+  // disable the floor completely -- every `score < NaN` comparison is false
+  // -- so a junk query came back with real-looking rows scoring 0.49. That
+  // is the one direction this module must never fail in.
+  const rawLimit = opts && Number(opts.limit);
+  const limit = Number.isFinite(rawLimit) && rawLimit >= 1
+    ? Math.min(Math.floor(rawLimit), MAX_LIMIT)
+    : 5;
+  const rawFloor = opts && opts.minScore;
+  const floor = typeof rawFloor === "number" && Number.isFinite(rawFloor)
+    ? rawFloor
+    : SCORE_FLOOR;
+
+  // Contract: the query is a string. Anything else is a caller bug, and
+  // coercing it hides that bug behind a plausible-looking calorie number --
+  // String(["chicken"]) is "chicken", so an accidental array used to return
+  // a real row. Fail closed instead.
+  if (typeof query !== "string") return [];
 
   const q = analyzeQuery(query);
   if (!q) return [];
@@ -957,25 +1200,61 @@ function search(query, opts) {
   }
   if (scores.size === 0) return [];
 
-  const nTerms = q.uniqueTerms.length;
+  const cTerms = q.coverageTerms;
   const results = [];
+
+  /**
+   * Coverage weights. A preparation modifier is a HINT, not an ingredient
+   * the row is obliged to contain: FNDDS writes "Turkey, NFS", never "Turkey,
+   * roast, sliced". Counting "roast" and "sliced" at full weight dropped
+   * "roast turkey breast, sliced" to 1/4 coverage and NO MATCH, and did the
+   * same to "pan seared tuna steak". Modifiers still score through BM25 when
+   * they DO match, so method discrimination (the whole reason for FNDDS) is
+   * unaffected -- this only removes the punishment for their absence.
+   */
+  const cWeights = new Array(cTerms.length);
+  let denom = 0;
+  for (let i = 0; i < cTerms.length; i++) {
+    cWeights[i] = WEAK_MODIFIERS.has(cTerms[i]) ? MODIFIER_COVERAGE_WEIGHT : 1;
+    denom += cWeights[i];
+  }
+  if (denom === 0) denom = 1;
+
+  // How much of the query is vocabulary the index has never seen? This is
+  // the real junk signal -- "chicken qqqq zzzz wibble" is 3/4 unknown --
+  // and separating it from "known but unmatched" is what lets the coverage
+  // penalty be gentle enough for genuine descriptive queries. Before this
+  // split, "cheeseburger with lettuce and tomato" scored 1.44 (the correct
+  // "Cheeseburger, NFS" row was already ranked #1) and fell under the floor
+  // purely because the user named two garnishes.
+  let unknown = 0;
+  for (let i = 0; i < cTerms.length; i++) {
+    if (!state.postings.has(cTerms[i])) unknown++;
+  }
+  const unknownFrac = cTerms.length ? unknown / cTerms.length : 0;
+  const unknownFactor = 1 - UNKNOWN_TERM_PENALTY * unknownFrac;
+
+  // Document frequency of the head noun -- used by layer 11b.
+  const headPostings = state.postings.get(q.head);
+  const headDf = headPostings ? headPostings.length : 0;
 
   for (const entry of scores) {
     const docIdx = entry[0];
     const bm25 = entry[1];
     const tokens = state.docTokens[docIdx];
 
-    // Layer 3: head-noun hard filter.
-    if (!tokens.has(q.head)) continue;
+    // Layer 3: head-noun hard filter -- against the DESCRIPTION only.
+    if (!state.docDescTokens[docIdx].has(q.head)) continue;
 
-    // Layer 2: query coverage.
+    // Layer 2: weighted query coverage, over non-brand terms only.
     let hits = 0;
-    for (let i = 0; i < nTerms; i++) {
-      if (tokens.has(q.uniqueTerms[i])) hits++;
+    for (let i = 0; i < cTerms.length; i++) {
+      if (tokens.has(cTerms[i])) hits += cWeights[i];
     }
-    const coverage = hits / nTerms;
+    const coverage = hits / denom;
     let score = bm25 * (COVERAGE_BASE + COVERAGE_SPAN * coverage);
     if (coverage < COVERAGE_HARD_FLOOR) score *= COVERAGE_HARD_PENALTY;
+    score *= unknownFactor;
 
     // Layer 3b: reward candidates whose own description head carries the
     // compound's trailing noun ("blueberry MUFFIN" -> "Muffin, blueberry",
@@ -1006,7 +1285,85 @@ function search(query, opts) {
     for (let i = 0; i < specific.length; i++) {
       if (!q.termSet.has(specific[i])) extra++;
     }
+
+    // Layer 8b: processing qualifiers the query never asked for. Folded into
+    // the same `extra` count. "blueberry pancakes" was answered with
+    // "Blueberries, DRIED" (317 kcal); dried fruit is ~5x the energy density
+    // of the fresh food, so an unrequested processing word is one of the few
+    // single tokens that can be catastrophic on its own.
+    const proc = state.docProcess[docIdx];
+    for (let i = 0; i < proc.length; i++) {
+      if (!q.termSet.has(proc[i])) extra++;
+    }
+
+    // Layer 8c: unmatched food nouns in the candidate's own description HEAD
+    // (the text before the first comma). FNDDS puts the food's identity
+    // there and its qualifiers after the comma, so an extra identity word in
+    // the head means a DIFFERENT food, not a narrower one:
+    //   "potato, fried" -> "SWEET potato fries" (192) not "Potato, french
+    //   fries, NFS" (225); "thick cut smoked bacon" -> "CANADIAN bacon"
+    //   (146) not "Pork bacon, smoked or cured, cooked" (468).
+    //
+    // Gated on the query's head noun being IN that same description head.
+    // Without the gate the rule misfires on FNDDS's genus-prefix convention
+    // -- "Potato, hash brown", "Soup, pho", "Beef, steak, ribeye",
+    // "Peppers, jalapenos" all put a classifier before the comma that the
+    // query legitimately omits, and penalising it broke "hash browns",
+    // "pho", "ribeye steak" and "jalapeno" outright. When the head noun is
+    // absent from the head, the extra words are a classifier, not a
+    // competing identity; when it is present, they genuinely modify it.
+    if (state.docHeadTokens[docIdx].has(q.head)) {
+      const headExtras = state.docHeadExtra[docIdx];
+      let headExtra = 0;
+      for (let i = 0; i < headExtras.length; i++) {
+        if (!q.termSet.has(headExtras[i])) headExtra++;
+      }
+      if (headExtra > 0) score /= 1 + HEAD_EXTRA_PENALTY * headExtra;
+    }
+
     if (extra > 0) score /= 1 + SPECIFICITY_PENALTY * extra;
+
+    // Layer 9: raw-row guard. The query named a cooking method and did not
+    // say "raw", so a raw row is wrong by construction. "roasted brussels
+    // sprouts with olive oil" returned "Brussels sprouts, raw" (43) over the
+    // cooked-with-fat row (67) only because the raw row is shorter.
+    if (q.hasMethod && !q.wantsRaw && state.docFlags[docIdx].raw) {
+      score *= RAW_PENALTY;
+    }
+
+    // Layer 10: offal / anatomical-part guard. Nobody photographs a plate of
+    // chicken skin. Bare "chicken" used to return "Chicken skin" (450 kcal)
+    // instead of USDA's own "Chicken, NS as to part and cooking method"
+    // default (164) -- a 2.7x overestimate on a very common query.
+    const parts = state.docParts[docIdx];
+    let partExtra = 0;
+    for (let i = 0; i < parts.length; i++) {
+      if (!q.termSet.has(parts[i])) partExtra++;
+    }
+    if (partExtra > 0) score *= OFFAL_PENALTY;
+
+    // Layer 11: dish-word coverage. The query named a dish form ("bowl",
+    // "sandwich", "pancakes") and this candidate is not that form. FNDDS
+    // "poke" is only "Poke greens" -- a leaf vegetable -- so "poke bowl"
+    // was answered with 42 kcal, roughly a quarter of the real figure.
+    // Failing closed here is the correct outcome: the caller keeps the
+    // vision model's own estimate rather than a confidently wrong row.
+    if (q.dishTerms.length > 0) {
+      let dishHit = false;
+      for (let i = 0; i < q.dishTerms.length; i++) {
+        if (tokens.has(q.dishTerms[i])) { dishHit = true; break; }
+      }
+      if (!dishHit) {
+        // A head noun that occurs in only one or two rows of a 5,432-row
+        // database is almost certainly a homograph, not the food: FNDDS's
+        // sole "poke" row is "Poke greens" (pokeweed, a boiled leaf), so
+        // "poke bowl" was answered with 42 kcal. One accidental row is not
+        // evidence, and with the dish form also missing there is nothing
+        // left supporting the match, so it fails closed.
+        score *= headDf <= RARE_HEAD_DF ? DISH_MISS_RARE_PENALTY
+                                        : DISH_MISS_PENALTY;
+      }
+    }
 
     // Layer 5: absolute floor -> explicit NO MATCH.
     if (score < floor) continue;
@@ -1041,7 +1398,10 @@ function search(query, opts) {
 function searchMulti(terms, opts) {
   ensureLoaded();
   const o = opts || {};
-  const limit = Math.max(1, o.limit || 5);
+  const rawLimit = Number(o.limit);
+  const limit = Number.isFinite(rawLimit) && rawLimit >= 1
+    ? Math.min(Math.floor(rawLimit), MAX_LIMIT)
+    : 5;
   const perTerm = Math.max(1, o.perTerm || Math.max(5, limit));
   const bonus = o.agreementBonus === undefined ? 0.15 : o.agreementBonus;
 
@@ -1094,7 +1454,17 @@ function searchMulti(terms, opts) {
 function lookup(code) {
   ensureLoaded();
   if (code === null || code === undefined) return null;
-  const idx = state.byCode.get(String(code).trim());
+  // String(x) THROWS for a null-prototype object or a Symbol -- it is not a
+  // safe coercion. lookup(Object.create(null)) used to raise
+  // "TypeError: Cannot convert object to primitive value" straight out of
+  // the module, which would take an Express handler down with it.
+  let key;
+  try {
+    key = String(code).trim();
+  } catch (e) {
+    return null;
+  }
+  const idx = state.byCode.get(key);
   if (idx === undefined) return null;
   return shape(state.rows[idx]);
 }

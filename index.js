@@ -272,8 +272,8 @@ if (require.main === module) {
     } else {
       vision.checkModelAvailable()
         .then((r) => {
-          if (r.available) console.log(`Vision model: ${r.configured}`);
-          else console.warn(`Vision model "${r.configured}" was not in the provider's list. ${r.suggestion || ''}`);
+          if (r.available) console.log(`Vision model: ${r.model}`);
+          else console.warn(`Vision model "${r.model}" is not available on this key. ${r.suggestion ? `Try VISION_MODEL=${r.suggestion}` : r.message || ''}`);
         })
         .catch((e) => console.warn('Could not verify the vision model:', e.message));
     }
