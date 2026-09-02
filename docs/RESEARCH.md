@@ -1,4 +1,4 @@
-# Food Analyzer — Rebuild Decision Brief
+# CalPal — Rebuild Decision Brief
 **Date: 2026-09-02** · Prepared from 5 verified research tracks + adversarial fact-check
 
 > **Headline:** GitHub Models is not deprecated, it is **gone** — `https://models.github.ai/inference/` returns **HTTP 410 Gone** on every route, permanently, since July 30 2026 ([docs.github.com/en/github-models](https://docs.github.com/en/github-models), [changelog](https://github.blog/changelog/2026-07-30-github-models-is-now-retired/)). No model id, token, or config change revives it. The good news: `index.js:28` already uses `new OpenAI({ baseURL, apiKey })`, and `baseURL` override is still supported (confirmed in your `node_modules/openai@5.6.0/client.d.ts:51`, and still present in published v7.9.0). **Lines 24–26 are the whole fix.**

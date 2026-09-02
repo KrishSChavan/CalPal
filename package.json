@@ -1,5 +1,5 @@
 {
-  "name": "food-analyzer",
+  "name": "calpal",
   "version": "1.0.0",
   "description": "Photograph a meal, get a calorie count cross-referenced against USDA FNDDS.",
   "main": "index.js",

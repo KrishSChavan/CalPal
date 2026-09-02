@@ -436,5 +436,5 @@ test('health reports the food db and the vision config', async () => {
 test('an unknown path serves the app shell', async () => {
   const res = await fetch(`${base}/some/deep/link`);
   assert.equal(res.status, 200);
-  assert.match(await res.text(), /<title>Calorie Analyzer<\/title>/);
+  assert.match(await res.text(), /<title>CalPal<\/title>/);
 });

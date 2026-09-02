@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Calorie Analyzer",
-  "short_name": "Calories",
+  "name": "CalPal",
+  "short_name": "CalPal",
   "description": "Photograph a meal, get a calorie count cross-referenced against the USDA food database.",
   "start_url": "/",
   "scope": "/",

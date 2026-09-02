@@ -4,7 +4,7 @@
 /**
  * build-fndds.js
  *
- * Builds the bundled offline food database used by the calorie analyzer.
+ * Builds the bundled offline food database used by CalPal.
  *
  * Downloads the USDA FoodData Central "Survey (FNDDS)" JSON bulk dataset,
  * unzips it, projects every food down to a compact record, and writes:

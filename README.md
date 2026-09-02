@@ -1,4 +1,4 @@
-# Calorie Analyzer
+# CalPal
 
 Photograph a meal, get a calorie count that is **cross-referenced against the
 USDA food database** rather than guessed by a language model.

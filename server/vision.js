@@ -3,7 +3,7 @@
 /**
  * server/vision.js
  * -----------------------------------------------------------------------------
- * Gemini vision client for the calorie analyzer, implementing the agreed
+ * Gemini vision client for CalPal, implementing the agreed
  * two-call pipeline:
  *
  *   Call 1  analyzeMeal()  image (+notes, clock label, plate diameter)
