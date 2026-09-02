@@ -1,11 +1,19 @@
 {
   "name": "food-analyzer",
   "version": "1.0.0",
-  "description": "",
+  "description": "Photograph a meal, get a calorie count cross-referenced against USDA FNDDS.",
   "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node index.js",
-    "devStart": "nodemon index.js"
+    "devStart": "nodemon index.js",
+    "build:fndds": "node scripts/build-fndds.js",
+    "test": "node --test \"test/*.test.*\" \"server/*.test.js\"",
+    "test:storage": "node --test test/storage.test.mjs",
+    "test:api": "node --test test/api.test.js",
+    "test:vision": "node server/vision.test.js"
   },
   "keywords": [],
   "author": "",

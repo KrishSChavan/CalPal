@@ -2,201 +2,216 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#12101a">
+  <meta name="description" content="Photograph a meal, get a calorie count cross-referenced against the USDA food database.">
 
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="Calorie App">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Calories">
   <link rel="apple-touch-icon" href="calorie-app-icon.png">
   <link rel="manifest" href="/manifest.json">
-
-  <link rel="icon" type="image/png" sizes="32x32" href="calorie-app-icon.png">
-  <link rel="icon" type="image/png" sizes="192x192" href="calorie-app-icon.png">
-  <link rel="icon" type="image/png" sizes="512x512" href="calorie-app-icon.png">
+  <link rel="icon" type="image/png" href="calorie-app-icon.png">
 
   <title>Calorie Analyzer</title>
 
-  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap">
 
-
-
-  <link rel="stylesheet" href="main.css" />
-  
-  <!-- <script defer src="main.js"></script> -->
-  <script defer src="script.js"></script>
-
+  <link rel="stylesheet" href="css/app.css">
+  <script type="module" src="js/app.js"></script>
 </head>
 <body>
-  
-  <div class="container">
-        <div class="main-card">
-            <!-- Header -->
-            <!-- <div class="header">
-                <h1 class="goal-text">Today's Goal</h1>
-                <div class="goal-number">
-                    <span id="dailyGoal">2100</span>
-                    <span class="kcal-text">kcal</span>
-                </div>
-                <p class="remaining-text">
-                    <span id="remaining">1800</span> kcal remaining
-                </p>
-            </div> -->
 
-            <!-- Progress Circle -->
-            <div class="progress-container">
-                <div class="progress-circle">
-                    <svg viewBox="0 0 100 100">
-                        <!-- Background circle -->
-                        <circle cx="50" cy="50" r="45" stroke="rgb(55, 65, 81)" stroke-width="8" fill="none"></circle>
-                        <!-- Progress circle -->
-                        <circle 
-                            id="progressCircle"
-                            cx="50" 
-                            cy="50" 
-                            r="45" 
-                            stroke="url(#gradient)" 
-                            stroke-width="8" 
-                            fill="none" 
-                            stroke-linecap="round"
-                            stroke-dasharray="283"
-                            stroke-dashoffset="283"
-                        ></circle>
-                        <defs>
-                            <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                                <stop offset="0%" stop-color="#8b5cf6"></stop>
-                                <stop offset="100%" stop-color="#a855f7"></stop>
-                            </linearGradient>
-                        </defs>
-                    </svg>
-                    <div class="progress-text">
-                        <div class="eaten-number" id="totalEaten">0</div>
-                        <div class="eaten-label">kcal Eaten</div>
-                    </div>
-                </div>
-            </div>
+  <main class="app">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">Calories eaten</div>
+        <h1 class="topbar__date" id="dateLabel">Today</h1>
+      </div>
+      <nav class="topbar__nav" aria-label="Change day">
+        <button class="daystep" id="prevDay" aria-label="Previous day">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>
+        </button>
+        <button class="daystep" id="nextDay" aria-label="Next day">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
+        </button>
+      </nav>
+    </header>
 
-            <!-- Meals List -->
-            <div class="meals-container" id="mealsContainer">
-                <!-- <div class="meal-card">
-                    <div class="meal-header">
-                        <div class="meal-info">
-                            <div class="meal-icon">🍳</div>
-                            <div>
-                                <h3 class="meal-name">Breakfast</h3>
-                                <p class="meal-calories">300 kcal</p>
-                            </div>
-                        </div>
-                    </div>
-                    <p class="meal-notes">Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea.</p>
-                </div> -->
-            </div>
+    <!-- The day's number. A goal ring replaces the bare figure once profile
+         and sign-in land; until then there is no goal to draw an arc against. -->
+    <section class="readout" aria-live="polite">
+      <div class="readout__figure">
+        <div class="readout__kcal num" id="dayKcal">0</div>
+        <div class="readout__unit">kcal</div>
+      </div>
+      <p class="readout__sub" id="dayMeta">No meals logged yet</p>
+      <div class="readout__rule"></div>
+    </section>
 
-            <!-- Add Meal Button -->
-            <button class="add-meal-btn" id="addMealBtn">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <line x1="12" y1="5" x2="12" y2="19"></line>
-                    <line x1="5" y1="12" x2="19" y2="12"></line>
-                </svg>
-                Add Meal
-            </button>
-        </div>
+    <section class="macros" aria-label="Macronutrients">
+      <div class="macro macro--protein">
+        <div class="macro__head"><span class="macro__dot"></span><span class="macro__label">Protein</span></div>
+        <div class="macro__value num" id="dayProtein">0<span>g</span></div>
+      </div>
+      <div class="macro macro--carb">
+        <div class="macro__head"><span class="macro__dot"></span><span class="macro__label">Carbs</span></div>
+        <div class="macro__value num" id="dayCarb">0<span>g</span></div>
+      </div>
+      <div class="macro macro--fat">
+        <div class="macro__head"><span class="macro__dot"></span><span class="macro__label">Fat</span></div>
+        <div class="macro__value num" id="dayFat">0<span>g</span></div>
+      </div>
+    </section>
+
+    <div class="section-head">
+      <h2 class="eyebrow">Meals</h2>
+      <span class="eyebrow" id="mealCount"></span>
     </div>
 
-    <!-- Modal -->
-    <div class="modal-overlay" id="modalOverlay">
-        <div class="modal">
-            <div class="modal-header">
-                <h2>Upload Meal Image</h2>
-                <button class="close-btn" id="closeBtn">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <line x1="18" y1="6" x2="6" y2="18"></line>
-                        <line x1="6" y1="6" x2="18" y2="18"></line>
-                    </svg>
-                </button>
-            </div>
-            <!-- Toggle Switch -->
-            <div class="toggle-group">
-                <button class="toggle-btn active" id="aiToggle">AI Analysis</button>
-                <button class="toggle-btn" id="manualToggle">Manual Input</button>
-            </div>
-            <div class="modal-content">
-                <!-- AI Analysis Section -->
-                <div id="aiSection">
-                    <!-- Image Upload Area -->
-                    <div class="upload-area" id="uploadAreaAI">
-                        <input type="file" id="imageInputAI" accept="image/*" style="display:none;">
-                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                            <circle cx="12" cy="13" r="4"></circle>
-                        </svg>
-                        <p>Select Image</p>
-                        <span class="image-filename" id="imageFilenameAI"></span>
-                        <img id="imagePreviewAI" style="display:none;max-width:100%;border-radius:0.5rem;margin-top:0.5rem;" />
-                    </div>
-                    <div class="form-group">
-                        <label for="mealNameAI">Meal Name</label>
-                        <input type="text" id="mealNameAI" placeholder="Enter meal name">
-                    </div>
-                    <div class="form-group">
-                        <label for="notes">Notes</label>
-                        <textarea id="notes" placeholder="Notes... (Ex: Ingredients, how it was cooked, other descriptions that can help us estimate the calories in the meal)" rows="3"></textarea>
-                    </div>
-                </div>
-                <!-- Manual Input Section -->
-                <div id="manualSection" class="hide">
-                    <!-- Image Upload Area -->
-                    <div class="upload-area" id="uploadAreaManual">
-                        <input type="file" id="imageInputManual" accept="image/*" style="display:none;">
-                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                            <circle cx="12" cy="13" r="4"></circle>
-                        </svg>
-                        <p>Select Image</p>
-                        <span class="image-filename" id="imageFilenameManual"></span>
-                        <img id="imagePreviewManual" style="display:none;max-width:100%;border-radius:0.5rem;margin-top:0.5rem;" />
-                    </div>
-                    <div class="form-group">
-                        <label for="mealNameManual">Meal Name</label>
-                        <input type="text" id="mealNameManual" placeholder="Enter meal name">
-                    </div>
-                    <div class="form-group">
-                        <label for="calories">Calories</label>
-                        <input type="number" id="calories" placeholder="Enter calories">
-                    </div>
-                </div>
-                            <!-- Calculate Button -->
-            <button class="calculate-btn" id="calculateBtn">Calculate</button>
-        </div>
-    </div>
-</div>
+    <div class="meals" id="meals"></div>
+  </main>
 
-<!-- Loader Overlay (covers whole screen) -->
-<div id="loaderOverlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;z-index:3000;background:rgba(0,0,0,0.5);align-items:center;justify-content:center;">
-  <div style="border: 6px solid #eee; border-top: 6px solid #9333ea; border-radius: 50%; width: 48px; height: 48px; animation: spin 1s linear infinite;"></div>
-</div>
-
-
-<div id="addToHomeModal" class="add-to-home-modal">
-  <div class="add-to-home-content">
-    <button class="add-to-home-close" onclick="document.getElementById('addToHomeModal').style.display='none'">&times;</button>
-    <h2>Add Calorie App to Home Screen</h2>
-    <p style="margin-top: 1rem;">
-      For the best experience, add this app to your home screen.
-    </p>
-    <ul style="margin: 1rem 0 0.5rem 0; color: #9ca3af; text-align: left;">
-      <li><b>iOS (Safari):</b> Tap <span style="font-size:1.2em;">&#x1F5D2;&#xFE0F;</span> <b>Share</b> and then <b>Add to Home Screen</b>.</li>
-      <li><b>Android (Chrome):</b> Tap <b>⋮</b> menu and select <b>Add to Home screen</b>.</li>
-    </ul>
-    <img src="calorie-app-icon.png" alt="App icon" style="margin: 1rem auto 0 auto; display: block; width: 60px; border-radius: 16px; box-shadow: 0 2px 8px #0003;">
+  <div class="actionbar">
+    <button class="btn btn--primary" id="snapBtn">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+        <circle cx="12" cy="13" r="4"></circle>
+      </svg>
+      Snap a meal
+    </button>
+    <button class="btn btn--ghost" id="manualBtn" aria-label="Add a meal manually">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+    </button>
   </div>
-</div>
 
+  <!-- ============================ Add sheet ============================ -->
+  <div class="scrim" id="addScrim" role="dialog" aria-modal="true" aria-labelledby="addTitle" hidden>
+    <div class="sheet">
+      <div class="sheet__grip"></div>
+      <div class="sheet__head">
+        <h2 class="sheet__title" id="addTitle">Add a meal</h2>
+        <button class="sheet__close" data-close="addScrim" aria-label="Close">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+
+      <div class="sheet__body">
+        <div class="segmented" role="tablist">
+          <button class="segmented__btn is-on" id="tabPhoto" role="tab" aria-selected="true">Photo</button>
+          <button class="segmented__btn" id="tabManual" role="tab" aria-selected="false">Manual</button>
+        </div>
+
+        <!-- Photo -->
+        <section id="panePhoto">
+          <div class="capture" id="capture">
+            <div class="capture__actions">
+              <button class="capture__btn" id="takeBtn">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                  <circle cx="12" cy="13" r="4"></circle>
+                </svg>
+                Take photo
+              </button>
+              <button class="capture__btn" id="chooseBtn">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+                  <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                  <polyline points="21 15 16 10 5 21"></polyline>
+                </svg>
+                Choose photo
+              </button>
+            </div>
+            <div class="capture__preview">
+              <img class="capture__img" id="captureImg" alt="The meal you photographed">
+              <span class="capture__size" id="captureSize"></span>
+              <button class="capture__clear" id="captureClear" aria-label="Remove photo">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="photoSlot">Meal</label>
+            <div class="chips" id="photoSlot" role="group"></div>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="photoNotes">Anything the photo can't show</label>
+            <textarea class="textarea" id="photoNotes" rows="2" placeholder="Fried in butter · whole milk · large portion"></textarea>
+            <p class="field__hint">Optional, but cooking fat and dairy type are the two things a photo hides and they move the number most.</p>
+          </div>
+        </section>
+
+        <!-- Manual -->
+        <section id="paneManual" hidden>
+          <div class="field">
+            <label class="field__label" for="manualName">Meal name</label>
+            <input class="input" id="manualName" type="text" placeholder="Chicken salad" autocomplete="off">
+          </div>
+          <div class="field">
+            <label class="field__label" for="manualKcal">Calories</label>
+            <input class="input input--num" id="manualKcal" type="number" inputmode="numeric" min="0" step="1" placeholder="450">
+          </div>
+          <div class="field">
+            <label class="field__label" for="manualSlot">Meal</label>
+            <div class="chips" id="manualSlot" role="group"></div>
+          </div>
+          <p class="field__hint" style="margin-top:0.75rem;">A photo is optional here — add one from the Photo tab if you want it on the record.</p>
+        </section>
+      </div>
+
+      <div class="sheet__foot">
+        <button class="btn btn--quiet" data-close="addScrim">Cancel</button>
+        <button class="btn btn--primary" id="addSubmit">Analyze</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================== Confirm sheet ========================== -->
+  <div class="scrim" id="confirmScrim" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" hidden>
+    <div class="sheet">
+      <div class="sheet__grip"></div>
+      <div class="sheet__head">
+        <h2 class="sheet__title" id="confirmTitle">Check the numbers</h2>
+        <button class="sheet__close" data-close="confirmScrim" aria-label="Close">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <div class="sheet__body" id="confirmBody"></div>
+      <div class="sheet__foot">
+        <button class="btn btn--quiet" data-close="confirmScrim">Discard</button>
+        <button class="btn btn--primary" id="confirmSave">Save meal</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================== Meal sheet =========================== -->
+  <div class="scrim" id="mealScrim" role="dialog" aria-modal="true" aria-labelledby="mealTitle" hidden>
+    <div class="sheet">
+      <div class="sheet__grip"></div>
+      <div class="sheet__head">
+        <h2 class="sheet__title" id="mealTitle">Meal</h2>
+        <button class="sheet__close" data-close="mealScrim" aria-label="Close">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <div class="sheet__body" id="mealBody"></div>
+      <div class="sheet__foot">
+        <button class="btn btn--danger" id="mealDelete">Delete</button>
+        <button class="btn btn--primary" id="mealSave">Save changes</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="busy" id="busy" role="status" aria-live="polite">
+    <div class="busy__ring"></div>
+    <p class="busy__label" id="busyLabel">Analyzing…</p>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 </body>
-<style>
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
-}
-</style>
 </html>
