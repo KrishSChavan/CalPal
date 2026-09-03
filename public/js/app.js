@@ -5,6 +5,7 @@
 import * as store from './storage.js';
 import { takePhoto, choosePhoto, normalize, formatBytes } from './camera.js';
 import { analyzeMeal, ApiError } from './api.js';
+import { requireSession, namespaceFor, signOut, LANDING_URL } from './auth.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -26,6 +27,8 @@ const el = {
   confirmScrim: $('confirmScrim'), confirmBody: $('confirmBody'), confirmSave: $('confirmSave'),
   mealScrim: $('mealScrim'), mealBody: $('mealBody'), mealTitle: $('mealTitle'),
   mealDelete: $('mealDelete'), mealSave: $('mealSave'),
+
+  signOut: $('signOutBtn'),
 
   busy: $('busy'), busyLabel: $('busyLabel'), toast: $('toast'),
 };
@@ -575,5 +578,18 @@ document.addEventListener('visibilitychange', () => {
   render();
 });
 
-store.init();
-render();
+/* Signing out clears the session, never the log. The meals stay under this
+   identity's namespace so the next sign-in reopens them where they were. */
+el.signOut.onclick = () => {
+  signOut();
+  location.replace(LANDING_URL);
+};
+
+/* The gate decides who this is; storage decides where their log lives. With no
+   session requireSession() has already started a redirect, so skip the render
+   rather than paint a log that is about to be thrown away. */
+const session = requireSession();
+if (session) {
+  store.init(namespaceFor(session));
+  render();
+}

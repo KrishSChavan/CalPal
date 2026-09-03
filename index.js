@@ -268,6 +268,59 @@ app.get('/api/health', async (req, res) => {
   });
 });
 
+
+const { createRemoteJWKSet, jwtVerify } = require('jose');
+
+const PROVIDERS = {
+  google: {
+    jwks: createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs')),
+    issuer: ['https://accounts.google.com', 'accounts.google.com'],
+    audience: () => process.env.GOOGLE_CLIENT_ID,
+  },
+  apple: {
+    jwks: createRemoteJWKSet(new URL('https://appleid.apple.com/auth/keys')),
+    issuer: 'https://appleid.apple.com',
+    audience: () => process.env.APPLE_SERVICE_ID,
+  },
+};
+
+app.get('/api/auth/config', (req, res) => {
+  res.json({
+    google: process.env.GOOGLE_CLIENT_ID || null,
+    apple: process.env.APPLE_SERVICE_ID || null,
+  });
+});
+
+/* Verify only. Nothing is stored: the sub goes back to the browser, which uses
+   it to name the localStorage bucket the log already lives in. */
+app.post('/api/auth/:provider', async (req, res) => {
+  const p = PROVIDERS[req.params.provider];
+  if (!p) return fail(res, 404, 'unknown_provider', 'No such sign-in provider.');
+
+  const audience = p.audience();
+  if (!audience) return fail(res, 503, 'not_configured', 'That sign-in is not configured on this server.');
+
+  const token = String(req.body?.token || '');
+  if (!token) return fail(res, 400, 'no_token', 'No identity token was sent.');
+
+  try {
+    const { payload } = await jwtVerify(token, p.jwks, {
+      issuer: p.issuer, audience, clockTolerance: 60,
+    });
+    res.json({
+      ok: true,
+      sub: payload.sub,
+      email: payload.email || '',
+      name: payload.name || '',
+      nonce: payload.nonce || null,
+    });
+  } catch {
+    return fail(res, 401, 'rejected', 'That sign-in token did not check out.');
+  }
+});
+
+
+
 /* SPA fallback. Express 5 moved to path-to-regexp v8, which rejects a bare
    '*' route — a plain middleware avoids the wildcard syntax entirely. */
 app.use((req, res, next) => {

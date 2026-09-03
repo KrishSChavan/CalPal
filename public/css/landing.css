@@ -1,0 +1,192 @@
+/* ==========================================================================
+   landing.css — the sign-in gate.
+
+   Loaded after app.css, which supplies the tokens, the reset and the toast.
+   Nothing here is shared with the logged-in app, so it stays in its own file
+   rather than growing app.css with rules that only ever match one document.
+
+   The two provider buttons are drawn to Google's and Apple's own guidance —
+   their brand surfaces (white / black), not the app's violet. The guest button
+   deliberately breaks that pattern: no fill, a dashed edge, dimmed ink, and a
+   line of small print. It has to read as "a different kind of choice", because
+   it is one — no identity, and a log that cannot be reopened from an account.
+   ========================================================================== */
+
+.gate {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: calc(env(safe-area-inset-top, 0px) + 2rem) var(--pad)
+           calc(env(safe-area-inset-bottom, 0px) + 2rem);
+}
+
+.gate__card {
+  width: 100%;
+  max-width: 22.5rem;
+}
+
+/* ------------------------------------------------------------- masthead */
+
+.gate__head {
+  text-align: center;
+  margin-bottom: 2.25rem;
+}
+
+.gate__mark {
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: 1.375rem;
+  display: block;
+  margin: 0 auto 1.125rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.gate__title {
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  margin-bottom: 0.5rem;
+}
+
+.gate__tag {
+  color: var(--ink-dim);
+  font-size: var(--t-md);
+  line-height: 1.45;
+  max-width: 19rem;
+  margin: 0 auto;
+}
+
+/* ------------------------------------------------- provider buttons ---- */
+
+.providers {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.idbtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6875rem;
+  width: 100%;
+  height: 3.25rem;
+  padding: 0 1.125rem;
+  border-radius: var(--r-md);
+  font-size: var(--t-md);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  transition: transform 0.12s var(--ease), filter 0.15s var(--ease),
+              opacity 0.15s var(--ease);
+}
+
+.idbtn:active { transform: scale(0.975); }
+.idbtn:hover { filter: brightness(0.94); }
+
+.idbtn__icon { flex: none; display: block; }
+
+.idbtn--google {
+  background: #ffffff;
+  color: #1f1f1f;
+}
+
+/* Apple asks for a full-black or full-white button with a 1px keyline when it
+   sits on a dark ground, so the black one does not vanish into the page. */
+.idbtn--apple {
+  background: #000000;
+  color: #ffffff;
+  border: 1px solid #3a3a3a;
+}
+
+.idbtn.is-busy { pointer-events: none; opacity: 0.6; }
+
+/* The UA's `[hidden] { display: none }` is a bare-element rule and loses to
+   .idbtn's display:flex, so hiding a provider needs saying twice. */
+.idbtn[hidden] { display: none; }
+
+/* --------------------------------------------------------- the divider */
+
+.gate__or {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  margin: 1.5rem 0;
+  color: var(--ink-faint);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.gate__or::before,
+.gate__or::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+/* --------------------------------------------------- the guest button */
+
+.guestbtn {
+  display: block;
+  width: 100%;
+  padding: 0.875rem 1rem;
+  border-radius: var(--r-md);
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+  color: var(--ink-dim);
+  text-align: center;
+  transition: border-color 0.15s var(--ease), color 0.15s var(--ease),
+              background 0.15s var(--ease), transform 0.12s var(--ease);
+}
+
+.guestbtn:hover {
+  background: var(--surface);
+  border-color: var(--ink-faint);
+  color: var(--ink);
+}
+
+.guestbtn:active { transform: scale(0.985); }
+
+.guestbtn__label {
+  display: block;
+  font-size: var(--t-md);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.guestbtn__sub {
+  display: block;
+  margin-top: 0.1875rem;
+  font-size: var(--t-xs);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-faint);
+}
+
+/* ------------------------------------------------------------ fine print */
+
+.gate__fine {
+  margin-top: 2rem;
+  color: var(--ink-faint);
+  font-size: var(--t-xs);
+  line-height: 1.6;
+  text-align: center;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.gate__fine strong {
+  color: var(--ink-dim);
+  font-weight: 600;
+}
+
+/* The app's toast is anchored above an action bar this page does not have. */
+.gate ~ .toast,
+body > .toast {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 1.25rem);
+}

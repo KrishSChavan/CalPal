@@ -237,3 +237,53 @@ test('corrupt storage falls back to a blank db rather than throwing', async () =
   assert.doesNotThrow(() => s.init());
   assert.deepEqual(s.daysWithMeals(), []);
 });
+
+/* ----------------------------------------------------------- namespaces */
+
+test('two identities keep separate logs on the same device', async () => {
+  const backing = install();
+
+  const a = await freshStore();
+  a.init('google.111');
+  a.addMeal('2026-09-02', { name: 'Ramen', kcal: 600 });
+
+  const b = await freshStore();
+  b.init('guest');
+  assert.deepEqual(b.daysWithMeals(), [], 'guest must not see the account log');
+  b.addMeal('2026-09-02', { name: 'Toast', kcal: 150 });
+
+  const a2 = await freshStore();
+  a2.init('google.111');
+  assert.equal(a2.totalsOn('2026-09-02').kcal, 600, 'signing back in reopens the same log');
+
+  assert.ok(backing.getItem('ca:v2:google.111'));
+  assert.ok(backing.getItem('ca:v2:guest'));
+});
+
+test('the first identity to sign in adopts a pre-auth log; the second does not', async () => {
+  const backing = install();
+
+  /* A log kept before the sign-in gate existed. */
+  const pre = await freshStore();
+  pre.init();
+  pre.addMeal('2026-09-02', { name: 'Curry', kcal: 720 });
+  assert.ok(backing.getItem('ca:v2'));
+
+  const first = await freshStore();
+  first.init('apple.abc');
+  assert.equal(first.totalsOn('2026-09-02').kcal, 720, 'history carries into the account');
+  assert.equal(backing.getItem('ca:v2'), null, 'the bare key is cleared once claimed');
+
+  const second = await freshStore();
+  second.init('guest');
+  assert.deepEqual(second.daysWithMeals(), [], 'a second identity cannot claim it again');
+});
+
+test('init with no namespace still uses the bare key', async () => {
+  const backing = install();
+  const s = await freshStore();
+  s.init();
+  s.addMeal('2026-09-02', { name: 'Eggs', kcal: 180 });
+  assert.ok(backing.getItem('ca:v2'));
+  assert.equal(backing.getItem('ca:v2:guest'), null);
+});

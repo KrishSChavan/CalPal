@@ -12,8 +12,13 @@
    oldest-first when the quota is hit rather than failing the save.
    ========================================================================== */
 
-const KEY = 'ca:v2';
+const BASE_KEY = 'ca:v2';
 const SCHEMA_VERSION = 2;
+
+/* Which log is open. init(namespace) points this at the signed-in identity's
+   own key; with no namespace it stays on the bare key, which is both the
+   pre-sign-in layout and what the storage tests exercise. */
+let KEY = BASE_KEY;
 
 /* -------------------------------------------------------------- date keys */
 
@@ -67,9 +72,9 @@ function blank() {
   return { version: SCHEMA_VERSION, days: {}, profile: {} };
 }
 
-function read() {
+function read(key = KEY) {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || !parsed.days) return null;
@@ -119,8 +124,27 @@ function migrateV1(target) {
   return imported;
 }
 
-export function init() {
+/* A log kept before sign-in existed sits under the bare key. The first
+   identity to open the app on this device claims it, so nobody's history
+   disappears the day the gate ships. The original is renamed rather than
+   deleted — it is a food diary, and a second identity must not claim it too. */
+function adoptPreAuth() {
+  const legacy = read(BASE_KEY);
+  if (!legacy) return null;
+  /* Moved, not copied: thumbnails make these blobs big enough that keeping a
+     duplicate around is a real chance of blowing the 5MB quota. Clearing the
+     old key is also what stops a second identity claiming the same log. */
+  localStorage.setItem(KEY, JSON.stringify(legacy));
+  localStorage.removeItem(BASE_KEY);
+  return legacy;
+}
+
+/* `namespace` comes from the session — 'guest', 'google.<sub>', 'apple.<sub>'.
+   Omit it and the bare key is used, which is what the tests do. */
+export function init(namespace) {
+  KEY = namespace ? `${BASE_KEY}:${namespace}` : BASE_KEY;
   db = read();
+  if (!db && namespace) db = adoptPreAuth();
   if (!db) {
     db = blank();
     const n = migrateV1(db);
