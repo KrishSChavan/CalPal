@@ -17,6 +17,12 @@
 .onboard {
   position: fixed;
   inset: 0;
+  /* Stated, not left to inset:0. A fixed inset:0 box is sized against the
+     LARGE viewport on mobile Safari and Chrome — the one that assumes the URL
+     bar is retracted — so the foot ends up behind the browser chrome. dvh
+     tracks the viewport that is actually on screen, which is what the rest of
+     this app already uses for .app and .gate. */
+  height: 100dvh;
   z-index: 120;
   display: flex;
   flex-direction: column;
@@ -30,8 +36,14 @@
 
 /* ------------------------------------------------------------------- bar */
 
+/* A grid, not a flex row, so the back button's slot exists whether or not the
+   button is in it. Step 1 has no back button; reserving the column is what
+   stops the ticks jumping sideways on the way to step 2 — and it lets the
+   button be genuinely display:none there, out of the tab order and off the
+   screen reader, instead of merely invisible and still focusable. */
 .onboard__bar {
-  display: flex;
+  display: grid;
+  grid-template-columns: 2rem 1fr auto;
   align-items: center;
   gap: 0.75rem;
   padding: calc(env(safe-area-inset-top, 0px) + 0.875rem) var(--pad) 0.5rem;
@@ -40,25 +52,16 @@
 .onboard__icon {
   display: grid;
   place-items: center;
-  width: 2.25rem;
+  width: 2rem;
   height: 2.25rem;
-  margin-left: -0.5rem;
+  margin-left: -0.375rem;
   border-radius: var(--r-sm);
   color: var(--ink-dim);
-  flex: none;
 }
 
 .onboard__icon:hover { color: var(--ink); }
 
-/* Kept in the layout when hidden so the ticks do not jump sideways between
-   step 1 (no back button) and step 2 (one). */
-.onboard__icon[hidden] {
-  display: grid;
-  visibility: hidden;
-}
-
 .onboard__ticks {
-  flex: 1;
   display: flex;
   gap: 0.3rem;
 }
@@ -74,7 +77,6 @@
 .onboard__tick.is-done { background: var(--accent); }
 
 .onboard__quit {
-  flex: none;
   font-size: var(--t-sm);
   font-weight: 600;
   color: var(--ink-faint);
@@ -87,6 +89,11 @@
 
 .onboard__viewport {
   flex: 1;
+  /* A flex item defaults to min-height:auto, which refuses to shrink below its
+     content. Without this the activity list on a short screen would push the
+     viewport taller than its share and shove the foot off the bottom instead
+     of scrolling inside itself. */
+  min-height: 0;
   overflow: hidden;
   position: relative;
 }
@@ -141,12 +148,21 @@
 /* ------------------------------------------------------------------ foot */
 
 .onboard__foot {
+  /* Pinned to the bottom edge twice over: the viewport above it grows into
+     the free space, AND this claims whatever is left. Either alone is enough
+     when every ancestor is the height it should be — together they hold the
+     button against the bottom even if one of them is not. */
+  margin-top: auto;
+  flex: none;
   padding: 0.75rem var(--pad) calc(env(safe-area-inset-bottom, 0px) + 1rem);
   border-top: 1px solid var(--line-soft);
   background: var(--ground);
 }
 
+/* .btn is inline-flex, and auto margins do not centre an inline-level box —
+   so on a screen wider than 30rem the button would sit off to the left. */
 .onboard__foot .btn {
+  display: flex;
   width: 100%;
   max-width: 30rem;
   margin: 0 auto;

@@ -61,6 +61,15 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
+/* The UA stylesheet hides [hidden] with a bare-element rule, so ANY author
+   rule that sets display outruns it and the element stays on screen with its
+   `hidden` property cheerfully reporting true. Every flex or grid component
+   in this file is one `hidden` away from that trap — .idbtn hit it, the unit
+   swap hit it — so it is settled once, here, rather than re-diagnosed per
+   component. Anything that needs to hold its layout space while invisible
+   wants visibility or a spacer column, not this attribute. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;
