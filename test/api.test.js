@@ -496,7 +496,9 @@ test('an unknown path serves the app shell', async () => {
    — it is that the model was never called.
    ========================================================================== */
 
-const { SignJWT } = require('jose');
+/* Imported the same lazy way the app does, so the suite exercises the path
+   that actually ships rather than one stock Node happens to allow. */
+const { jose } = require('../server/jose');
 
 test('an unauthenticated photo is rejected before any model call', async () => {
   const client = scriptedClient();
@@ -526,7 +528,7 @@ test('a well-formed token signed with the wrong secret is rejected', async () =>
   const client = scriptedClient();
   vision.setClientFactory(() => client);
 
-  const forged = await new SignJWT({ kind: 'google' })
+  const forged = await new (await jose()).SignJWT({ kind: 'google' })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject('attacker')
     .setIssuer('calpal')
@@ -546,7 +548,7 @@ test('an expired token is rejected and says so distinctly', async () => {
   const client = scriptedClient();
   vision.setClientFactory(() => client);
 
-  const stale = await new SignJWT({ kind: 'google' })
+  const stale = await new (await jose()).SignJWT({ kind: 'google' })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject('lapsed-user')
     .setIssuer('calpal')

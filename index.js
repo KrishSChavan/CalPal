@@ -9,6 +9,7 @@ const foodDb = require('./server/food-db');
 const vision = require('./server/vision');
 const session = require('./server/session');
 const { limiters } = require('./server/rate-limit');
+const { jose } = require('./server/jose');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -367,20 +368,33 @@ app.get('/api/health', healthLimit, async (req, res) => {
 });
 
 
-const { createRemoteJWKSet, jwtVerify } = require('jose');
-
 const PROVIDERS = {
   google: {
-    jwks: createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs')),
+    jwksUrl: 'https://www.googleapis.com/oauth2/v3/certs',
     issuer: ['https://accounts.google.com', 'accounts.google.com'],
     audience: () => process.env.GOOGLE_CLIENT_ID,
   },
   apple: {
-    jwks: createRemoteJWKSet(new URL('https://appleid.apple.com/auth/keys')),
+    jwksUrl: 'https://appleid.apple.com/auth/keys',
     issuer: 'https://appleid.apple.com',
     audience: () => process.env.APPLE_SERVICE_ID,
   },
 };
+
+/* Built on first use, not at import: createRemoteJWKSet itself is cheap and
+   makes no network call, but reaching it required a synchronous require() of
+   an ESM-only package, which is what took the whole deployment down.
+
+   Memoized per URL because the returned function owns the key cache — a fresh
+   one per request would refetch Google's JWKS every time. */
+const jwksCache = new Map();
+async function jwksFor(provider) {
+  if (!jwksCache.has(provider.jwksUrl)) {
+    const { createRemoteJWKSet } = await jose();
+    jwksCache.set(provider.jwksUrl, createRemoteJWKSet(new URL(provider.jwksUrl)));
+  }
+  return jwksCache.get(provider.jwksUrl);
+}
 
 app.get('/api/auth/config', configLimit, (req, res) => {
   res.json({
@@ -402,7 +416,8 @@ app.post('/api/auth/:provider', authLimit, async (req, res) => {
   if (!token) return fail(res, 400, 'no_token', 'No identity token was sent.');
 
   try {
-    const { payload } = await jwtVerify(token, p.jwks, {
+    const { jwtVerify } = await jose();
+    const { payload } = await jwtVerify(token, await jwksFor(p), {
       issuer: p.issuer, audience, clockTolerance: 60,
     });
 

@@ -23,7 +23,9 @@
    ========================================================================== */
 
 const crypto = require('crypto');
-const { SignJWT, jwtVerify } = require('jose');
+/* Lazily imported — jose is ESM-only and Vercel's launcher cannot require() it.
+   See server/jose.js; this was the cause of a total production outage. */
+const { jose } = require('./jose');
 
 const ISSUER = 'calpal';
 const AUDIENCE = 'calpal-api';
@@ -104,6 +106,7 @@ async function issue({ sub, kind }) {
   if (kind !== 'google' && kind !== 'apple') {
     throw new SessionError(`Refusing to issue a session for kind "${kind}".`, 'bad_request');
   }
+  const { SignJWT } = await jose();
   return new SignJWT({ kind })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(String(sub))
@@ -118,6 +121,7 @@ async function issue({ sub, kind }) {
 
 async function verify(token) {
   if (!token) throw new SessionError('This request carried no session token.', 'no_session');
+  const { jwtVerify } = await jose();
   let payload;
   try {
     ({ payload } = await jwtVerify(token, secret(), {
