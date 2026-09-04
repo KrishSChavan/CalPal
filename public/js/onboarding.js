@@ -517,59 +517,25 @@ function advance() {
 
 /* ------------------------------------------------------- the iOS keyboard */
 
-/* Why this exists, since it looks like something CSS should handle:
+/* The panel deliberately does NOT lay itself out around the software
+   keyboard. It stays the size of the screen and the foot stays at the bottom
+   of it — behind the keyboard while the keyboard is up, the way a page does.
 
-   `position: fixed` on iOS is laid out against the LAYOUT viewport. That
-   viewport does not shrink when the software keyboard comes up, and — the
-   part that actually bites — iOS frequently leaves the document scrolled by
-   the amount it shifted to reveal the focused field, and does not put it back
-   when the keyboard goes away. The overlay then paints from a top edge that
-   is no longer the top of the screen: the foot lifts off the bottom and a
-   band of the app shows underneath. In a standalone PWA there is no browser
-   chrome to disguise it, which is why it is obvious there and nowhere else.
-   100dvh cannot fix this — the dynamic viewport tracks retractable browser
-   UI, not the keyboard.
+   An earlier version pinned the whole layer to visualViewport, which dragged
+   Continue up onto the keyboard's top edge on every step that auto-focuses an
+   input. That was never what fixed the foot's spacing either — the foot was
+   stacking a design margin on top of env(safe-area-inset-bottom), and in a
+   standalone PWA with the keyboard down the pin was writing the values the
+   CSS already had. See .onboard__foot in onboard.css for the actual fix.
 
-   So the panel is pinned to the VISUAL viewport, the rectangle actually on
-   screen. That is correct while the keyboard is up (the button sits just
-   above it) and correct again the moment it drops, without depending on iOS
-   restoring anything. Browsers without the API keep the CSS 100dvh. */
+   What CSS genuinely cannot do is the one thing left here. `position: fixed`
+   on iOS is laid out against the LAYOUT viewport, and iOS scrolls the
+   DOCUMENT to reveal a focused field without reliably putting it back when
+   the keyboard goes away — so the overlay ends up painting from a top edge
+   that is no longer the top of the screen. Nothing is scrollable behind a
+   full-screen overlay, so any non-zero scroll here is that artefact and only
+   ever wants putting back to zero. */
 
-let vvFrame = 0;
-
-const visual = () => globalThis.visualViewport || null;
-
-/* Big enough to separate a software keyboard (~290px in portrait, ~200px in
-   landscape) from retractable browser chrome (Safari's two bars are ~100px
-   together) and from the ~44px accessory bar a hardware keyboard leaves
-   behind. documentElement.clientHeight is the LAYOUT viewport, which neither
-   the keyboard nor the chrome resizes, so nothing short of a keyboard can
-   cross this line and latch is-lifted on — which would strip the legitimate
-   home-indicator clearance and drop the button into the swipe-up zone. */
-const KEYBOARD_MIN = 150;
-
-function syncToVisualViewport() {
-  const vv = visual();
-  if (!vv) return;
-  cancelAnimationFrame(vvFrame);
-  vvFrame = requestAnimationFrame(() => {
-    /* Setting top AND height leaves `bottom` over-constrained, so the CSS
-       inset:0 is ignored rather than fighting this. transform is untouched,
-       which is what keeps the slide animation free. */
-    el.root.style.top = `${vv.offsetTop}px`;
-    el.root.style.height = `${vv.height}px`;
-
-    /* Once the panel's bottom edge is the keyboard rather than the screen,
-       the foot's safe-area inset reserves for an edge no longer under it —
-       see .onboard.is-lifted in onboard.css. */
-    const covered = document.documentElement.clientHeight - (vv.offsetTop + vv.height);
-    el.root.classList.toggle('is-lifted', covered > KEYBOARD_MIN);
-  });
-}
-
-/* iOS can also leave the document itself scrolled once the keyboard goes.
-   Nothing is scrollable behind a full-screen overlay, so any non-zero scroll
-   here is that artefact and only ever wants putting back to zero. */
 function onFocusOut() {
   requestAnimationFrame(() => {
     if (open && globalThis.scrollY) globalThis.scrollTo(0, 0);
@@ -577,21 +543,8 @@ function onFocusOut() {
 }
 
 function watchViewport(on) {
-  const vv = visual();
-  if (on) {
-    document.addEventListener('focusout', onFocusOut);
-    if (!vv) return;
-    vv.addEventListener('resize', syncToVisualViewport);
-    vv.addEventListener('scroll', syncToVisualViewport);
-    syncToVisualViewport();
-    return;
-  }
-
-  document.removeEventListener('focusout', onFocusOut);
-  cancelAnimationFrame(vvFrame);
-  if (!vv) return;
-  vv.removeEventListener('resize', syncToVisualViewport);
-  vv.removeEventListener('scroll', syncToVisualViewport);
+  if (on) document.addEventListener('focusout', onFocusOut);
+  else document.removeEventListener('focusout', onFocusOut);
 }
 
 /* --------------------------------------------------------------- open/close */
@@ -604,12 +557,6 @@ function close(after) {
   watchViewport(false);
   setTimeout(() => {
     el.root.hidden = true;
-    /* Cleared only now: dropping the pinned top/height mid-slide would jump
-       the panel just as it is animating away, and repainting the foot's
-       padding under it would do the same. */
-    el.root.style.top = '';
-    el.root.style.height = '';
-    el.root.classList.remove('is-lifted');
     after?.();
   }, 460);
 }
@@ -653,8 +600,9 @@ export function openOnboarding({ profile = {}, mode = 'setup', onSave, onSkip } 
   goTo(0, { focus: false });
   el.root.hidden = false;
 
-  /* Pin to the visible rectangle before the slide, so the panel animates to
-     the right height rather than resizing under the user afterwards. */
+  /* Armed before the slide rather than after it: the first step can raise the
+     keyboard on its own, and the scroll it leaves behind has to be caught
+     whenever it happens. */
   watchViewport(true);
 
   /* One frame with the layer laid out but still translated off the bottom,

@@ -23,10 +23,12 @@
      tracks the viewport that is actually on screen, which is what the rest of
      this app already uses for .app and .gate.
 
-     This is the floor, not the whole story: dvh follows retractable browser
-     UI but NOT the software keyboard, and iOS leaves the document scrolled
-     after the keyboard is dismissed. onboarding.js overrides top/height from
-     visualViewport to cover that — see the iOS keyboard note there. */
+     dvh follows retractable browser UI but NOT the software keyboard, and
+     that is deliberate here: the panel keeps its full height while the
+     keyboard is up and the foot stays at the bottom of the screen behind it,
+     rather than riding up on the keyboard's top edge. The one thing left over
+     — iOS leaving the document scrolled after the keyboard goes — is reset in
+     onboarding.js; see the iOS keyboard note there. */
   height: 100dvh;
   z-index: 120;
   display: flex;
@@ -197,15 +199,6 @@
   max-width: 30rem;
   margin: 0 auto;
 }
-
-/* Set by onboarding.js while the panel is pinned to a visual viewport whose
-   bottom edge is the keyboard, not the screen. env(safe-area-inset-bottom)
-   does not fall to zero for a software keyboard — WebKit does not model one
-   as an inset, which is the whole reason the visualViewport API exists — so
-   without this the foot reserves the home indicator several hundred px above
-   where the home indicator is. Specificity (0,2,1) beats .onboard__foot's
-   (0,1,0), so this needs no ordering games against the rule above. */
-.onboard.is-lifted .onboard__foot { padding-bottom: 0.75rem; }
 
 /* ------------------------------------------------------------ unit swap */
 
