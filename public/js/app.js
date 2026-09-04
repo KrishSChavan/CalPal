@@ -6,12 +6,15 @@ import * as store from './storage.js';
 import { takePhoto, choosePhoto, normalize, formatBytes } from './camera.js';
 import { analyzeMeal, ApiError } from './api.js';
 import { requireSession, namespaceFor, signOut, LANDING_URL } from './auth.js';
+import { consumption } from './profile.js';
+import { openOnboarding } from './onboarding.js';
 
 const $ = (id) => document.getElementById(id);
 
 const el = {
   dateLabel: $('dateLabel'), prevDay: $('prevDay'), nextDay: $('nextDay'),
   dayKcal: $('dayKcal'), dayMeta: $('dayMeta'),
+  dayGoal: $('dayGoal'), dayRule: $('dayRule'), dayFill: $('dayFill'), dayLeft: $('dayLeft'),
   dayProtein: $('dayProtein'), dayCarb: $('dayCarb'), dayFat: $('dayFat'),
   meals: $('meals'), mealCount: $('mealCount'),
   snapBtn: $('snapBtn'), manualBtn: $('manualBtn'),
@@ -28,7 +31,7 @@ const el = {
   mealScrim: $('mealScrim'), mealBody: $('mealBody'), mealTitle: $('mealTitle'),
   mealDelete: $('mealDelete'), mealSave: $('mealSave'),
 
-  signOut: $('signOutBtn'),
+  signOut: $('signOutBtn'), profileBtn: $('profileBtn'),
 
   busy: $('busy'), busyLabel: $('busyLabel'), toast: $('toast'),
 };
@@ -109,6 +112,51 @@ function buildSlotChips(container, selected, onPick) {
 
 const pickedSlot = (container) => container.querySelector('.chip.is-on')?.dataset.slot || store.slotForTime();
 
+/* ------------------------------------------------------------ goal bar */
+
+/* Fills the heavy rule under the day's total. With no target set there is
+   nothing to fill against, so everything the goal added is put away and the
+   rule goes back to being the plain Nutrition Facts bar it started as —
+   an empty track would imply a target the day had not been eaten into.
+
+   Note this reads the profile fresh on every render rather than caching it:
+   the onboarding overlay can change the target while the app is mounted
+   behind it, and a cached goal would leave a stale bar under a live number. */
+function paintGoal(kcal) {
+  const c = consumption(kcal, store.getProfile().goalKcal);
+
+  if (!c) {
+    el.dayGoal.hidden = true;
+    el.dayLeft.hidden = true;
+    el.dayFill.style.width = '0%';
+    el.dayRule.className = 'readout__rule';
+    for (const attr of ['role', 'aria-valuemin', 'aria-valuemax', 'aria-valuenow', 'aria-label']) {
+      el.dayRule.removeAttribute(attr);
+    }
+    return;
+  }
+
+  el.dayGoal.hidden = false;
+  el.dayGoal.textContent = `of ${c.target.toLocaleString()}`;
+
+  el.dayRule.className = `readout__rule has-goal readout__rule--${c.band}`;
+  el.dayFill.style.width = `${c.fill * 100}%`;
+
+  /* The bar is the only place the ratio is drawn, so it has to carry the
+     number for anyone who cannot see it drawn. */
+  el.dayRule.setAttribute('role', 'progressbar');
+  el.dayRule.setAttribute('aria-valuemin', '0');
+  el.dayRule.setAttribute('aria-valuemax', String(c.target));
+  el.dayRule.setAttribute('aria-valuenow', String(Math.min(c.eaten, c.target)));
+  el.dayRule.setAttribute('aria-label', `${c.percent}% of a ${c.target.toLocaleString()} kcal target`);
+
+  el.dayLeft.hidden = false;
+  el.dayLeft.classList.toggle('is-over', c.over);
+  el.dayLeft.innerHTML = c.over
+    ? `<b>${Math.abs(c.remaining).toLocaleString()} over</b><span>${c.percent}% of target</span>`
+    : `<b>${c.remaining.toLocaleString()} left</b><span>${c.percent}% of target</span>`;
+}
+
 /* ----------------------------------------------------------------- render */
 
 function render() {
@@ -118,6 +166,7 @@ function render() {
 
   const t = store.totalsOn(viewKey);
   el.dayKcal.textContent = t.kcal.toLocaleString();
+  paintGoal(t.kcal);
   el.dayProtein.innerHTML = `${t.protein}<span>g</span>`;
   el.dayCarb.innerHTML = `${t.carb}<span>g</span>`;
   el.dayFat.innerHTML = `${t.fat}<span>g</span>`;
@@ -596,6 +645,38 @@ el.signOut.onclick = () => {
   location.replace(LANDING_URL);
 };
 
+/* ------------------------------------------------------------- profile */
+
+function saveProfile(patch) {
+  store.setProfile(patch);
+  render();
+  toast(`Daily target set to ${patch.goalKcal.toLocaleString()} kcal.`);
+}
+
+el.profileBtn.onclick = () => openOnboarding({
+  profile: store.getProfile(),
+  mode: 'edit',
+  onSave: saveProfile,
+});
+
+/* Shown once, on the first load after sign-in, and never again unless the
+   topbar asks for it. `setupSkipped` is what makes "not now" stick: without
+   it the same five screens would ambush someone on every cold start of the
+   PWA, which is a worse outcome than a log with no target on it. */
+function offerSetup() {
+  const profile = store.getProfile();
+  if (profile.goalKcal || profile.setupSkipped) return;
+
+  /* A beat, so the app is perceptibly there before the layer slides up over
+     it. Straight off the first paint it reads as a page that loaded wrong. */
+  setTimeout(() => openOnboarding({
+    profile,
+    mode: 'setup',
+    onSave: saveProfile,
+    onSkip: () => store.setProfile({ setupSkipped: true }),
+  }), 260);
+}
+
 /* The gate decides who this is; storage decides where their log lives. With no
    session requireSession() has already started a redirect, so skip the render
    rather than paint a log that is about to be thrown away. */
@@ -603,4 +684,5 @@ const session = requireSession();
 if (session) {
   store.init(namespaceFor(session));
   render();
+  offerSetup();
 }

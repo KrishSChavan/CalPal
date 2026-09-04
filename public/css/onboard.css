@@ -1,0 +1,422 @@
+/* ==========================================================================
+   onboard.css — the profile / calorie-target flow.
+
+   Loaded after app.css, which supplies the tokens, the reset, .field, .input
+   and .btn. Only index.html loads this, and only one dialog in it matches, so
+   it stays out of app.css for the same reason landing.css does.
+
+   Two slides, composed:
+     · the layer itself rises from the bottom edge (translateY 100% -> 0),
+     · the steps inside it move sideways on a single flex track.
+   Both are transforms on composited properties, so neither animates layout.
+   The track is one element rather than five cross-fading panels because a
+   track cannot desynchronise: going back is the same transition run the other
+   way, and there is no state where two steps are half-visible at once.
+   ========================================================================== */
+
+.onboard {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  background: var(--ground);
+  transform: translateY(100%);
+  transition: transform 0.46s var(--ease);
+  will-change: transform;
+}
+
+.onboard.is-open { transform: translateY(0); }
+
+/* ------------------------------------------------------------------- bar */
+
+.onboard__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: calc(env(safe-area-inset-top, 0px) + 0.875rem) var(--pad) 0.5rem;
+}
+
+.onboard__icon {
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  margin-left: -0.5rem;
+  border-radius: var(--r-sm);
+  color: var(--ink-dim);
+  flex: none;
+}
+
+.onboard__icon:hover { color: var(--ink); }
+
+/* Kept in the layout when hidden so the ticks do not jump sideways between
+   step 1 (no back button) and step 2 (one). */
+.onboard__icon[hidden] {
+  display: grid;
+  visibility: hidden;
+}
+
+.onboard__ticks {
+  flex: 1;
+  display: flex;
+  gap: 0.3rem;
+}
+
+.onboard__tick {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--surface-2);
+  transition: background 0.34s var(--ease);
+}
+
+.onboard__tick.is-done { background: var(--accent); }
+
+.onboard__quit {
+  flex: none;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--ink-faint);
+  padding: 0.35rem 0;
+}
+
+.onboard__quit:hover { color: var(--ink-dim); }
+
+/* ----------------------------------------------------------------- track */
+
+.onboard__viewport {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+
+.onboard__track {
+  display: flex;
+  height: 100%;
+  transform: translateX(calc(var(--i, 0) * -100%));
+  transition: transform 0.42s var(--ease);
+  will-change: transform;
+}
+
+/* The pane must stay exactly one viewport wide: the track slides by 100% per
+   step, so capping the pane instead of its contents would make every step
+   after the first land short of the edge. The 30rem measure the rest of the
+   app is set to therefore belongs on .obstep__body, not here. */
+.obstep {
+  flex: 0 0 100%;
+  width: 100%;
+  overflow-y: auto;
+  padding: 0.75rem var(--pad) 1.5rem;
+
+  /* The off-screen steps are `inert` for the keyboard, but a screen reader's
+     own cursor and a stray focus ring can still find text sliding past. Fading
+     the inactive ones also keeps the motion legible rather than busy. */
+  opacity: 0;
+  transition: opacity 0.3s var(--ease);
+}
+
+.obstep.is-current { opacity: 1; }
+
+.obstep__body {
+  max-width: 30rem;
+  margin: 0 auto;
+}
+
+.obstep__title {
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  margin-bottom: 0.5rem;
+}
+
+.obstep__lede {
+  color: var(--ink-dim);
+  font-size: var(--t-md);
+  line-height: 1.45;
+  margin-bottom: 1.5rem;
+}
+
+/* ------------------------------------------------------------------ foot */
+
+.onboard__foot {
+  padding: 0.75rem var(--pad) calc(env(safe-area-inset-bottom, 0px) + 1rem);
+  border-top: 1px solid var(--line-soft);
+  background: var(--ground);
+}
+
+.onboard__foot .btn {
+  width: 100%;
+  max-width: 30rem;
+  margin: 0 auto;
+}
+
+/* ------------------------------------------------------------ unit swap */
+
+/* .segmented comes from app.css; this only shrinks it and lets it sit right,
+   because the unit toggle is a preference about the form and not one of the
+   answers being collected. */
+/* .segmented is a block-level grid, so it fills its container by default and
+   `width: auto` would not shrink it. fit-content plus an auto left margin is
+   what actually pushes it to the right of the measure column. */
+.segmented--mini {
+  width: fit-content;
+  margin: 0 0 1.25rem auto;
+  font-size: var(--t-sm);
+}
+
+.segmented--mini .segmented__btn {
+  padding: 0.3rem 0.7rem;
+  font-size: var(--t-xs);
+  letter-spacing: 0.04em;
+}
+
+/* ------------------------------------------------------------- measures */
+
+/* Feet and inches are one answer in two boxes, so they share a row and a
+   label. The metric row replaces it wholesale rather than converting in
+   place, so nothing round-trips through a rounded value while being typed. */
+.measure {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.measure .input {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+}
+
+.measure__unit {
+  flex: none;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--ink-faint);
+  width: 1.75rem;
+}
+
+.field__err {
+  font-size: var(--t-sm);
+  color: var(--risk);
+  margin-top: 0.15rem;
+}
+
+.input.is-bad,
+.input.is-bad:focus {
+  border-color: var(--risk);
+}
+
+/* ------------------------------------------------------------------ BMI */
+
+/* Shown on the height/weight step because it is the one thing those two
+   numbers give you on their own. It deliberately does NOT feed the target --
+   see the header of profile.js -- so it is presented as a readout, not as a
+   result, and the caveat sits directly under the band.  */
+.bmi {
+  margin-top: 1.75rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.bmi__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.bmi__value {
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hard stops, not a blend: the cut-points are the whole content of the scale,
+   and a smooth gradient would hide exactly where 25 and 30 fall. Positions
+   are the WHO bands mapped onto a 15-40 axis. */
+.bmi__scale {
+  position: relative;
+  height: 6px;
+  margin: 0.875rem 0 0.75rem;
+  border-radius: 3px;
+  background: linear-gradient(90deg,
+    var(--warn) 0 14%,
+    var(--ok) 14% 40%,
+    var(--warn) 40% 60%,
+    var(--risk) 60% 100%);
+  opacity: 0.85;
+}
+
+.bmi__marker {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 3px;
+  height: 16px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  background: var(--ink);
+  box-shadow: 0 0 0 2px var(--surface);
+  transform: translateY(-50%);
+  transition: left 0.4s var(--ease);
+}
+
+.bmi__band {
+  font-size: var(--t-sm);
+  font-weight: 600;
+}
+
+.bmi__band[data-tone="ok"]   { color: var(--ok); }
+.bmi__band[data-tone="warn"] { color: var(--warn); }
+.bmi__band[data-tone="risk"] { color: var(--risk); }
+
+.bmi__caveat {
+  margin-top: 0.5rem;
+  font-size: var(--t-xs);
+  line-height: 1.5;
+  color: var(--ink-faint);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* ----------------------------------------------------------- option list */
+
+.optlist {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.optcard {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  transition: border-color 0.18s var(--ease), background 0.18s var(--ease);
+}
+
+.optcard:hover { border-color: var(--line-strong); }
+
+.optcard.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.optcard__text { flex: 1; min-width: 0; }
+
+.optcard__label {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.optcard__detail {
+  font-size: var(--t-sm);
+  color: var(--ink-dim);
+  margin-top: 0.1rem;
+}
+
+/* A ring that fills, rather than a checkmark that appears: the empty state
+   has to read as "not yet answered" at a glance on a list of five. */
+.optcard__mark {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  border: 2px solid var(--line-strong);
+  display: grid;
+  place-items: center;
+  transition: border-color 0.18s var(--ease);
+}
+
+.optcard.is-on .optcard__mark { border-color: var(--accent); }
+
+.optcard__mark::after {
+  content: "";
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 50%;
+  background: var(--accent);
+  transform: scale(0);
+  transition: transform 0.18s var(--ease);
+}
+
+.optcard.is-on .optcard__mark::after { transform: scale(1); }
+
+/* --------------------------------------------------------------- summary */
+
+.target {
+  text-align: center;
+  padding: 1.5rem 0 1.25rem;
+}
+
+.target__kcal {
+  font-size: clamp(3rem, 15vw, 4rem);
+  font-weight: 700;
+  letter-spacing: -0.045em;
+  line-height: 0.95;
+  font-variant-numeric: tabular-nums;
+}
+
+.target__unit {
+  font-size: var(--t-md);
+  color: var(--ink-faint);
+  margin-top: 0.375rem;
+}
+
+/* The working. A target nobody can audit is a number nobody has a reason to
+   trust, which is the same argument the confirm sheet makes for printing the
+   FNDDS row under every component. */
+.working {
+  border-top: 1px solid var(--line);
+  margin-top: 0.5rem;
+}
+
+.working__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.625rem 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: var(--t-sm);
+}
+
+.working__label { color: var(--ink-dim); }
+
+.working__label small {
+  display: block;
+  color: var(--ink-faint);
+  font-size: var(--t-xs);
+}
+
+.working__value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  flex: none;
+}
+
+.working__row--total {
+  border-bottom: none;
+  border-top: 2px solid var(--ink);
+  padding-top: 0.75rem;
+  font-size: var(--t-md);
+}
+
+.working__row--total .working__label { color: var(--ink); font-weight: 600; }
+
+@media (prefers-reduced-motion: reduce) {
+  /* app.css already flattens every duration. The one thing that must be
+     restated is that a step which never animates in still has to be visible,
+     since .obstep starts at opacity 0. */
+  .obstep { opacity: 1; }
+}

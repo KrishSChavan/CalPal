@@ -15,7 +15,8 @@
     "test:storage": "node --test test/storage.test.mjs",
     "test:api": "node --test test/api.test.js",
     "test:vision": "node server/vision.test.js",
-    "test:db:adv": "node server/food-db.adversarial.test.js"
+    "test:db:adv": "node server/food-db.adversarial.test.js",
+    "test:profile": "node --test test/profile.test.mjs"
   },
   "keywords": [],
   "author": "",
