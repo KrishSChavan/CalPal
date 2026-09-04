@@ -539,6 +539,15 @@ let vvFrame = 0;
 
 const visual = () => globalThis.visualViewport || null;
 
+/* Big enough to separate a software keyboard (~290px in portrait, ~200px in
+   landscape) from retractable browser chrome (Safari's two bars are ~100px
+   together) and from the ~44px accessory bar a hardware keyboard leaves
+   behind. documentElement.clientHeight is the LAYOUT viewport, which neither
+   the keyboard nor the chrome resizes, so nothing short of a keyboard can
+   cross this line and latch is-lifted on — which would strip the legitimate
+   home-indicator clearance and drop the button into the swipe-up zone. */
+const KEYBOARD_MIN = 150;
+
 function syncToVisualViewport() {
   const vv = visual();
   if (!vv) return;
@@ -549,6 +558,12 @@ function syncToVisualViewport() {
        which is what keeps the slide animation free. */
     el.root.style.top = `${vv.offsetTop}px`;
     el.root.style.height = `${vv.height}px`;
+
+    /* Once the panel's bottom edge is the keyboard rather than the screen,
+       the foot's safe-area inset reserves for an edge no longer under it —
+       see .onboard.is-lifted in onboard.css. */
+    const covered = document.documentElement.clientHeight - (vv.offsetTop + vv.height);
+    el.root.classList.toggle('is-lifted', covered > KEYBOARD_MIN);
   });
 }
 
@@ -590,9 +605,11 @@ function close(after) {
   setTimeout(() => {
     el.root.hidden = true;
     /* Cleared only now: dropping the pinned top/height mid-slide would jump
-       the panel just as it is animating away. */
+       the panel just as it is animating away, and repainting the foot's
+       padding under it would do the same. */
     el.root.style.top = '';
     el.root.style.height = '';
+    el.root.classList.remove('is-lifted');
     after?.();
   }, 460);
 }

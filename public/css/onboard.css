@@ -163,13 +163,28 @@
 /* ------------------------------------------------------------------ foot */
 
 .onboard__foot {
-  /* Pinned to the bottom edge twice over: the viewport above it grows into
-     the free space, AND this claims whatever is left. Either alone is enough
-     when every ancestor is the height it should be — together they hold the
-     button against the bottom even if one of them is not. */
+  /* .onboard__viewport is flex:1, so flex resolves it into all the free space
+     before auto margins are distributed and this one never gets any. It is a
+     no-op kept as a guard for the day the viewport stops being flexible —
+     what actually holds the foot down is the viewport growing above it. */
   margin-top: auto;
   flex: none;
-  padding: 0.75rem var(--pad) calc(env(safe-area-inset-bottom, 0px) + 1rem);
+
+  /* max(), NOT `env() + 1rem`. The home-indicator inset already IS the
+     clearance the button needs; stacking a design margin on top of it
+     reserved 34 + 16 = 50px under a 52px button. And because the foot, the
+     panel and body all paint var(--ground) — the only edge in here being the
+     border-TOP, above the button — that band reads as the panel stopping
+     short of the screen rather than as padding. At max() the button's bottom
+     edge lands exactly on the top of the safe area, where iOS puts its own
+     bottom buttons; below that is the system swipe-up region.
+
+     Split out of the shorthand deliberately: as one declaration a browser
+     that cannot parse max()/env() drops padding-top and the horizontal
+     --pad with it. Split, the shorthand's 0.75rem survives as the fallback. */
+  padding: 0.75rem var(--pad);
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 0.75rem);
+
   border-top: 1px solid var(--line-soft);
   background: var(--ground);
 }
@@ -182,6 +197,15 @@
   max-width: 30rem;
   margin: 0 auto;
 }
+
+/* Set by onboarding.js while the panel is pinned to a visual viewport whose
+   bottom edge is the keyboard, not the screen. env(safe-area-inset-bottom)
+   does not fall to zero for a software keyboard — WebKit does not model one
+   as an inset, which is the whole reason the visualViewport API exists — so
+   without this the foot reserves the home indicator several hundred px above
+   where the home indicator is. Specificity (0,2,1) beats .onboard__foot's
+   (0,1,0), so this needs no ordering games against the rule above. */
+.onboard.is-lifted .onboard__foot { padding-bottom: 0.75rem; }
 
 /* ------------------------------------------------------------ unit swap */
 
