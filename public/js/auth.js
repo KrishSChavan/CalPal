@@ -45,8 +45,11 @@ export function namespaceFor(session) {
   return session.kind === 'guest' ? 'guest' : `${session.kind}.${sub}`;
 }
 
-export function startSession({ kind, sub, name = '', email = '' }) {
-  const session = { kind, sub: String(sub), name, email, since: Date.now() };
+export function startSession({ kind, sub, name = '', email = '', token = '' }) {
+  /* `token` is the server's own bearer token, issued only after Google or
+     Apple vouched for this person. It is what /api/analyze checks. A guest
+     session has none, and cannot be given one — that is the whole point. */
+  const session = { kind, sub: String(sub), name, email, token, since: Date.now() };
   localStorage.setItem(SESSION_KEY, JSON.stringify(session));
   return session;
 }
@@ -116,6 +119,12 @@ export async function providerConfig() {
   } catch {
     return blank;
   }
+}
+
+/* The bearer token for API calls that cost the operator money, or '' when
+   this session has none (guest, or a sign-in that predates server tokens). */
+export function sessionToken() {
+  return readSession()?.token || '';
 }
 
 /* ------------------------------------------------------------- guarding */

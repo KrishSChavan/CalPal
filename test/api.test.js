@@ -10,8 +10,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 process.env.GEMINI_API_KEY = 'AIza-test-key';
+/* Long enough to satisfy session.js's 32-char floor. Set before index.js is
+   required so the secret resolves from the environment, not the dev fallback. */
+process.env.AUTH_SECRET = 'test-secret-that-is-long-enough-to-pass-32';
 
 const vision = require('../server/vision');
+const session = require('../server/session');
+const rateLimit = require('../server/rate-limit');
 const app = require('../index.js');
 
 /* ------------------------------------------------------------------ setup */
@@ -118,11 +123,23 @@ test.before(async () => {
 
 test.after(() => server?.close());
 
-async function postPhoto(fields = {}) {
+let tokenSeq = 0;
+
+/* A fresh subject per token keeps the per-identity rate limiter from leaking
+   between tests — they share one process, and the windows are wall-clock. */
+async function freshToken(kind = 'google') {
+  return session.issue({ sub: `test-user-${++tokenSeq}`, kind });
+}
+
+async function postPhoto(fields = {}, { token, omitAuth = false } = {}) {
   const form = new FormData();
   form.append('image', new Blob([JPEG_1PX], { type: 'image/jpeg' }), 'meal.jpg');
   for (const [k, v] of Object.entries(fields)) form.append(k, String(v));
-  const res = await fetch(`${base}/api/analyze`, { method: 'POST', body: form });
+
+  const headers = {};
+  if (!omitAuth) headers.Authorization = `Bearer ${token || (await freshToken())}`;
+
+  const res = await fetch(`${base}/api/analyze`, { method: 'POST', body: form, headers });
   return { res, body: await res.json() };
 }
 
@@ -241,7 +258,11 @@ test("the user's slot choice wins over the model's", async () => {
 test('a request with no image is rejected before any model call', async () => {
   const client = scriptedClient();
   vision.setClientFactory(() => client);
-  const res = await fetch(`${base}/api/analyze`, { method: 'POST', body: new FormData() });
+  const res = await fetch(`${base}/api/analyze`, {
+    method: 'POST',
+    body: new FormData(),
+    headers: { Authorization: `Bearer ${await freshToken()}` },
+  });
   const body = await res.json();
   assert.equal(res.status, 400);
   assert.equal(body.ok, false);
@@ -426,15 +447,316 @@ test('below-threshold candidates are still offered, flagged as such', async () =
   assert.equal(item.kcal, 400);
 });
 
-test('health reports the food db and the vision config', async () => {
+test('health reports the food db and whether vision works', async () => {
   const res = await fetch(`${base}/api/health`);
   const body = await res.json();
   assert.equal(body.foodDb.foodCount, 5432);
-  assert.equal(typeof body.vision.configured, 'boolean');
+  assert.equal(typeof body.vision.ok, 'boolean');
+});
+
+/* /api/health is public and unauthenticated. checkModelAvailable() knows every
+   model enabled on the operator's API key; none of that belongs in a response
+   a stranger can fetch. The assertion is on the whole serialized body, not on
+   named fields, so re-spreading the check result would fail this test. */
+test('health leaks nothing about the API key beyond a yes/no', async () => {
+  vision.setClientFactory(() => ({
+    chat: { completions: { create: async () => { throw new Error('not used here'); } } },
+    models: {
+      list: async () => ({
+        data: [
+          { id: 'gemini-3.5-flash-lite' },
+          { id: 'gemini-private-preview-model' },
+          { id: 'some-other-enabled-model' },
+        ],
+      }),
+    },
+  }));
+
+  const res = await fetch(`${base}/api/health`);
+  const raw = await res.text();
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(Object.keys(JSON.parse(raw).vision), ['ok'], 'vision must expose exactly one field');
+  for (const leaked of ['gemini-private-preview-model', 'some-other-enabled-model', 'models', 'suggestion', 'VISION_MODEL']) {
+    assert.ok(!raw.includes(leaked), `health must not disclose "${leaked}"`);
+  }
 });
 
 test('an unknown path serves the app shell', async () => {
   const res = await fetch(`${base}/some/deep/link`);
   assert.equal(res.status, 200);
   assert.match(await res.text(), /<title>CalPal<\/title>/);
+});
+
+/* ==========================================================================
+   Server-side authorization on /api/analyze.
+
+   The gate exists to stop an anonymous caller spending the operator's Gemini
+   quota, so the load-bearing assertion in most of these is not the status code
+   — it is that the model was never called.
+   ========================================================================== */
+
+const { SignJWT } = require('jose');
+
+test('an unauthenticated photo is rejected before any model call', async () => {
+  const client = scriptedClient();
+  vision.setClientFactory(() => client);
+
+  const { res, body } = await postPhoto({}, { omitAuth: true });
+
+  assert.equal(res.status, 401);
+  assert.equal(body.error.code, 'no_session');
+  assert.equal(client.bodies.length, 0, 'must not burn a model call on an anonymous request');
+});
+
+test('a garbage bearer token is rejected before any model call', async () => {
+  const client = scriptedClient();
+  vision.setClientFactory(() => client);
+
+  const { res, body } = await postPhoto({}, { token: 'not.a.jwt' });
+
+  assert.equal(res.status, 401);
+  assert.equal(body.error.code, 'bad_session');
+  assert.equal(client.bodies.length, 0);
+});
+
+/* The whole point of signing: a token this server did not mint is worthless,
+   even when it is a structurally perfect JWT with all the right claims. */
+test('a well-formed token signed with the wrong secret is rejected', async () => {
+  const client = scriptedClient();
+  vision.setClientFactory(() => client);
+
+  const forged = await new SignJWT({ kind: 'google' })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setSubject('attacker')
+    .setIssuer('calpal')
+    .setAudience('calpal-api')
+    .setIssuedAt()
+    .setExpirationTime('30d')
+    .sign(new TextEncoder().encode('a-different-secret-that-is-long-enough!!'));
+
+  const { res, body } = await postPhoto({}, { token: forged });
+
+  assert.equal(res.status, 401);
+  assert.equal(body.error.code, 'bad_session');
+  assert.equal(client.bodies.length, 0);
+});
+
+test('an expired token is rejected and says so distinctly', async () => {
+  const client = scriptedClient();
+  vision.setClientFactory(() => client);
+
+  const stale = await new SignJWT({ kind: 'google' })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setSubject('lapsed-user')
+    .setIssuer('calpal')
+    .setAudience('calpal-api')
+    .setIssuedAt(Math.floor(Date.now() / 1000) - 7200)
+    .setExpirationTime(Math.floor(Date.now() / 1000) - 3600)
+    .sign(new TextEncoder().encode(process.env.AUTH_SECRET));
+
+  const { res, body } = await postPhoto({}, { token: stale });
+
+  assert.equal(res.status, 401);
+  /* Distinct from bad_session on purpose: the client signs the user out and
+     bounces to the gate for this one, rather than just showing a toast. */
+  assert.equal(body.error.code, 'session_expired');
+  assert.equal(client.bodies.length, 0);
+});
+
+test('the per-identity rate limit stops a signed-in account draining the quota', async () => {
+  const client = scriptedClient();
+  vision.setClientFactory(() => client);
+  rateLimit.resetAll();
+
+  const hourly = rateLimit.limiters.analyze.windows.find((w) => w.key === 'hour').max;
+  const token = await session.issue({ sub: 'greedy-user', kind: 'google' });
+
+  for (let i = 0; i < hourly; i++) {
+    const { res } = await postPhoto({}, { token });
+    assert.equal(res.status, 200, `request ${i + 1} of ${hourly} should still be allowed`);
+  }
+
+  const callsBefore = client.bodies.length;
+  const { res, body } = await postPhoto({}, { token });
+
+  assert.equal(res.status, 429);
+  assert.equal(body.error.code, 'rate_limited');
+  assert.ok(res.headers.get('retry-after'), 'a 429 must say when to come back');
+  assert.equal(client.bodies.length, callsBefore, 'a throttled request must not reach the model');
+
+  rateLimit.resetAll();
+});
+
+test('the limit is per identity, not global', async () => {
+  const client = scriptedClient();
+  vision.setClientFactory(() => client);
+  rateLimit.resetAll();
+
+  const hourly = rateLimit.limiters.analyze.windows.find((w) => w.key === 'hour').max;
+  const heavy = await session.issue({ sub: 'heavy-user', kind: 'google' });
+  for (let i = 0; i < hourly; i++) await postPhoto({}, { token: heavy });
+
+  assert.equal((await postPhoto({}, { token: heavy })).res.status, 429);
+
+  const bystander = await session.issue({ sub: 'quiet-user', kind: 'apple' });
+  const { res } = await postPhoto({}, { token: bystander });
+  assert.equal(res.status, 200, 'one noisy account must not lock everyone else out');
+
+  rateLimit.resetAll();
+});
+
+test('a guest identity cannot be minted a token at all', async () => {
+  await assert.rejects(
+    () => session.issue({ sub: 'local', kind: 'guest' }),
+    /Refusing to issue a session/,
+    'signing a self-asserted guest identity would launder it through our key'
+  );
+});
+
+test('health reports whether sign-in is enforced and a secret resolved', async () => {
+  const res = await fetch(`${base}/api/health`);
+  const body = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(body.auth.signinRequired, true);
+  assert.equal(body.auth.secret.ok, true);
+  assert.equal(body.auth.secret.source, 'env');
+  assert.ok(!JSON.stringify(body).includes(process.env.AUTH_SECRET), 'never leak the secret itself');
+});
+
+/* ==========================================================================
+   Rate limiting across the rest of the API.
+
+   /api/analyze is covered above (per identity). These cover the routes that
+   have no identity to key on, plus the health cache — which is the actual fix
+   for /api/health being a Gemini quota amplifier; its limiter is a backstop.
+   ========================================================================== */
+
+test('sign-in attempts are capped per address', async () => {
+  rateLimit.resetAll();
+  const max = rateLimit.limiters.auth.windows.find((w) => w.key === 'minute').max;
+
+  /* Deliberately invalid tokens: this is about the ceiling, not verification.
+     Each still costs a signature check, which is what the cap protects. */
+  const attempt = () =>
+    fetch(`${base}/api/auth/google`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'nope' }),
+    });
+
+  for (let i = 0; i < max; i++) {
+    const res = await attempt();
+    assert.notEqual(res.status, 429, `attempt ${i + 1} of ${max} should not be throttled yet`);
+  }
+
+  const res = await attempt();
+  const body = await res.json();
+  assert.equal(res.status, 429);
+  assert.equal(body.error.code, 'rate_limited');
+  assert.ok(res.headers.get('retry-after'), 'a 429 must say when to come back');
+  rateLimit.resetAll();
+});
+
+test('health is capped, and every answer carries the standard headers', async () => {
+  rateLimit.resetAll();
+  const max = rateLimit.limiters.health.windows.find((w) => w.key === 'minute').max;
+
+  for (let i = 0; i < max; i++) {
+    const res = await fetch(`${base}/api/health`);
+    assert.equal(res.status, 200);
+    assert.ok(res.headers.get('ratelimit-limit'), 'RateLimit-Limit should always be present');
+    assert.ok(res.headers.get('ratelimit-remaining') !== null);
+  }
+
+  const res = await fetch(`${base}/api/health`);
+  assert.equal(res.status, 429);
+  rateLimit.resetAll();
+});
+
+/* The load-bearing one: without the cache, N health hits are N calls to
+   Google, which is how an uptime monitor quietly drains a free-tier quota. */
+test('repeated health checks do not each call the model', async () => {
+  rateLimit.resetAll();
+
+  let modelCalls = 0;
+  vision.setClientFactory(() => ({
+    chat: { completions: { create: async () => { throw new Error('not used here'); } } },
+    models: {
+      list: async () => {
+        modelCalls++;
+        return { data: [{ id: 'gemini-3.5-flash-lite' }] };
+      },
+    },
+  }));
+
+  /* Warm the cache, then hit it again well inside the TTL. */
+  await fetch(`${base}/api/health`);
+  const afterFirst = modelCalls;
+  await fetch(`${base}/api/health`);
+  await fetch(`${base}/api/health`);
+
+  assert.equal(
+    modelCalls,
+    afterFirst,
+    'health must serve a cached model check rather than calling Google every hit'
+  );
+  rateLimit.resetAll();
+});
+
+test('the /api backstop keys on the caller, not the route', async () => {
+  rateLimit.resetAll();
+  const limiter = rateLimit.limiters.api;
+  const max = limiter.windows.find((w) => w.key === 'minute').max;
+
+  /* Consumed directly: driving 120 real requests through fetch would make the
+     suite slow for no extra confidence in the engine itself. */
+  for (let i = 0; i < max; i++) {
+    assert.equal(limiter.consume('api:1.2.3.4').ok, true, `hit ${i + 1} should pass`);
+  }
+  assert.equal(limiter.consume('api:1.2.3.4').ok, false, 'the ceiling should bind');
+  assert.equal(limiter.consume('api:5.6.7.8').ok, true, 'a different address is unaffected');
+
+  rateLimit.resetAll();
+});
+
+test('a limiter reports the binding window when several are configured', async () => {
+  const limiter = rateLimit.createLimiter({
+    name: 'test-two-windows',
+    keyBy: () => 'k',
+    windows: [
+      { key: 'minute', ms: 60000, max: 5 },
+      { key: 'hour', ms: 3600000, max: 3 },
+    ],
+  });
+
+  assert.equal(limiter.consume('k').remaining, 2, 'headroom is the tightest window, not the loosest');
+  limiter.consume('k');
+  limiter.consume('k');
+
+  const blocked = limiter.consume('k');
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.window, 'hour', 'the hour cap of 3 binds before the minute cap of 5');
+});
+
+test('the client address survives a proxy header only when a proxy is trusted', async () => {
+  const spoofed = { headers: { 'x-forwarded-for': '9.9.9.9' }, socket: { remoteAddress: '::ffff:127.0.0.1' } };
+
+  const wasVercel = process.env.VERCEL;
+  const wasTrust = process.env.TRUST_PROXY;
+  delete process.env.VERCEL;
+  delete process.env.TRUST_PROXY;
+
+  assert.equal(
+    rateLimit.clientIp(spoofed),
+    '127.0.0.1',
+    'an untrusted X-Forwarded-For must not let a caller pick their own bucket'
+  );
+
+  process.env.TRUST_PROXY = '1';
+  assert.equal(rateLimit.clientIp(spoofed), '9.9.9.9', 'behind a trusted proxy the header is the client');
+
+  if (wasVercel === undefined) delete process.env.VERCEL; else process.env.VERCEL = wasVercel;
+  if (wasTrust === undefined) delete process.env.TRUST_PROXY; else process.env.TRUST_PROXY = wasTrust;
 });

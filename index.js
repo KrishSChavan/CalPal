@@ -7,12 +7,22 @@ require('dotenv').config();
 
 const foodDb = require('./server/food-db');
 const vision = require('./server/vision');
+const session = require('./server/session');
+const { limiters } = require('./server/rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
+
+/* Per-address backstop over every /api route, so one added later is never
+   wide open just because nobody remembered. Deliberately loose — the tight
+   per-route ceilings below are what actually bind. Static files and the SPA
+   shell are exempt: on Vercel the CDN answers those without ever reaching
+   this process, and throttling them would only break the app for a user on a
+   slow connection reloading assets. */
+app.use('/api', (req, res, next) => apiLimit(req, res, next));
 app.use(express.static(path.join(__dirname, 'public')));
 
 /* Memory storage, not disk. The client re-encodes every photo to a ~100-250KB
@@ -26,13 +36,88 @@ const reconcileEnabled = () => process.env.RECONCILE !== '0';
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 8 * 1024 * 1024, files: 1 },
+  /* 4 MB, not 8: Vercel rejects a request body over 4.5 MB at the edge with
+     its own 413 page before multer sees the stream, which would make the
+     too_large branch below dead code in production and hand the client an
+     HTML body it cannot parse. The client uploads a ~100-250KB canvas
+     re-encode, so this ceiling is still pure slack. */
+  limits: { fileSize: 4 * 1024 * 1024, files: 1 },
 });
 
 /* --------------------------------------------------------------- helpers */
 
 function fail(res, status, code, message) {
   return res.status(status).json({ ok: false, error: { code, message } });
+}
+
+/* Analysis costs the operator two Gemini requests per photo, so it is the one
+   route that has to know who is asking. Set ANALYZE_REQUIRES_SIGNIN=0 to go
+   back to an open endpoint — that is not a lighter form of protection, it is
+   none, and it should only ever be a local convenience. */
+const signinRequired = () => process.env.ANALYZE_REQUIRES_SIGNIN !== '0';
+
+/* Gate first, parse second: an unauthorized caller should never get as far as
+   having 4 MB of multipart read on its behalf. */
+async function requireSession(req, res, next) {
+  if (!signinRequired()) return next();
+
+  try {
+    req.session = await session.verify(session.bearer(req));
+  } catch (err) {
+    if (err instanceof session.SessionError) {
+      /* A missing or malformed server secret is our fault and unfixable by the
+         caller — say 503 so nobody is told to sign in again pointlessly. */
+      const ours = err.code === 'no_secret' || err.code === 'bad_secret';
+      if (ours) console.error('[auth]', err.message);
+      return fail(res, ours ? 503 : 401, ours ? 'not_configured' : err.code, err.message);
+    }
+    return next(err);
+  }
+  return next();
+}
+
+/* Bound here rather than in rate-limit.js so that module never has to know
+   this app's error envelope; fail() is the only thing it is missing. */
+const apiLimit = limiters.api.middleware(fail);
+const authLimit = limiters.auth.middleware(fail);
+const configLimit = limiters.config.middleware(fail);
+const healthLimit = limiters.health.middleware(fail);
+const analyzeLimit = limiters.analyze.middleware(fail);
+
+/* Per-identity ceiling, so one signed-in account cannot drain the day's quota
+   for everyone else. With the gate off there is no identity to count against,
+   and the per-address /api backstop is the only thing left holding the line. */
+function rateLimitAnalyze(req, res, next) {
+  if (!signinRequired()) return next();
+  return analyzeLimit(req, res, next);
+}
+
+/* checkModelAvailable() is a live call to Google, so an uncached /api/health
+   is a quota amplifier: anything that polls it — a crawler, an uptime monitor,
+   a stuck client — spends the operator's API budget at whatever rate it likes.
+   Cache the answer briefly. Health is a "is this deployment wired up" check,
+   not a per-second liveness probe, so a slightly stale reading is the right
+   trade. In-flight calls share one promise, so a burst cannot start several. */
+const HEALTH_TTL_MS = Number(process.env.HEALTH_CACHE_MS || 30000);
+let modelCache = { at: 0, promise: null };
+
+function checkModelCached() {
+  const now = Date.now();
+  if (modelCache.promise && now - modelCache.at < HEALTH_TTL_MS) return modelCache.promise;
+
+  const promise = vision.checkModelAvailable()
+    .then((r) => {
+      /* The detail goes to the log, not the response — see the health route.
+         Bounded by the cache, so this cannot be made to spam by polling. */
+      if (!r.available) console.warn('[health] vision unavailable:', r.message || r.error || 'unknown');
+      return r;
+    })
+    .catch((e) => {
+      console.warn('[health] vision check failed:', e.message);
+      return { ok: false, available: false, error: e.message };
+    });
+  modelCache = { at: now, promise };
+  return promise;
 }
 
 const MAX_CANDIDATES = 4;
@@ -102,7 +187,7 @@ function pickPortionHint(row, grams) {
 
 /* --------------------------------------------------------------- analyze */
 
-app.post('/api/analyze', upload.single('image'), async (req, res) => {
+app.post('/api/analyze', requireSession, rateLimitAnalyze, upload.single('image'), async (req, res) => {
   if (!req.file || !req.file.buffer?.length) {
     return fail(res, 400, 'no_image', 'No photo reached the server.');
   }
@@ -258,13 +343,26 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
 
 /* ---------------------------------------------------------------- health */
 
-app.get('/api/health', async (req, res) => {
+app.get('/api/health', healthLimit, async (req, res) => {
   const db = foodDb.stats();
-  const model = await vision.checkModelAvailable().catch((e) => ({ ok: false, error: e.message }));
+  const model = await checkModelCached();
   res.json({
     ok: true,
     foodDb: db,
-    vision: { configured: vision.isConfigured(), ...model },
+    /* One boolean: can photo analysis run right now, or not.
+
+       This endpoint is public and unauthenticated, and checkModelAvailable()
+       returns every model id enabled on the API key, the configured model
+       name, and a suggested replacement — an inventory of the operator's
+       Google account that no client of this app has any use for. Why a
+       failure happened goes to the server log, where the operator can read it
+       and a stranger cannot. */
+    vision: { ok: vision.isConfigured() && !!model?.available },
+    /* No token needed to read this: a deployment whose AUTH_SECRET is missing
+       cannot issue sign-ins at all, so requiring one to find that out would be
+       a locked door with the key inside. Reports whether a secret resolves and
+       where it came from — never the secret. */
+    auth: { signinRequired: signinRequired(), secret: session.secretStatus() },
   });
 });
 
@@ -284,7 +382,7 @@ const PROVIDERS = {
   },
 };
 
-app.get('/api/auth/config', (req, res) => {
+app.get('/api/auth/config', configLimit, (req, res) => {
   res.json({
     google: process.env.GOOGLE_CLIENT_ID || null,
     apple: process.env.APPLE_SERVICE_ID || null,
@@ -293,7 +391,7 @@ app.get('/api/auth/config', (req, res) => {
 
 /* Verify only. Nothing is stored: the sub goes back to the browser, which uses
    it to name the localStorage bucket the log already lives in. */
-app.post('/api/auth/:provider', async (req, res) => {
+app.post('/api/auth/:provider', authLimit, async (req, res) => {
   const p = PROVIDERS[req.params.provider];
   if (!p) return fail(res, 404, 'unknown_provider', 'No such sign-in provider.');
 
@@ -307,14 +405,31 @@ app.post('/api/auth/:provider', async (req, res) => {
     const { payload } = await jwtVerify(token, p.jwks, {
       issuer: p.issuer, audience, clockTolerance: 60,
     });
+
+    /* The provider has now vouched for this person, so mint our own token.
+       This is the only place one is ever issued — which is what makes holding
+       one mean "Google or Apple said so", rather than "asked nicely". */
+    const sessionToken = await session.issue({ sub: payload.sub, kind: req.params.provider });
+
     res.json({
       ok: true,
       sub: payload.sub,
       email: payload.email || '',
       name: payload.name || '',
       nonce: payload.nonce || null,
+      sessionToken,
     });
-  } catch {
+  } catch (err) {
+    if (err instanceof session.SessionError) {
+      console.error('[auth] cannot issue a session:', err.message);
+      return fail(res, 503, 'not_configured', err.message);
+    }
+    /* A JWKS fetch that failed — DNS, blocked egress, jose's timeout on a
+       cold instance — and a genuinely bad token both land here, and both
+       used to return the same 401 with nothing written down. Log before
+       answering, or the runtime log has nothing to say about a valid Google
+       token being refused. */
+    console.error('[auth]', req.params.provider, err);
     return fail(res, 401, 'rejected', 'That sign-in token did not check out.');
   }
 });
@@ -343,18 +458,33 @@ app.use((err, req, res, next) => {
 
 /* ------------------------------------------------------------------ boot */
 
-foodDb.load();
+/* Warm the index at import so the first request does not pay for it — but a
+   throw here is unrecoverable on a serverless host: the exception escapes
+   module init, the platform never gets the exported app back, and EVERY
+   request fails (Vercel calls it FUNCTION_INVOCATION_FAILED) instead of just
+   the routes that needed the file. Every public food-db export calls
+   ensureLoaded() itself, so a failed warm-up only costs a retry on
+   /api/analyze and /api/health while the SPA and /api/auth/* keep working. */
+try {
+  foodDb.load();
+  const db = foodDb.stats();
+  console.log(`FNDDS index: ${db.foodCount} foods (${db.loadMs} ms)`);
+} catch (err) {
+  console.error('[boot] FNDDS index failed to load; food lookups will fail:', err);
+}
+
+if (!vision.isConfigured()) {
+  console.warn('GEMINI_API_KEY is not set — photo analysis will return a 503 until it is.');
+}
 
 /* Only listen when run directly, so the integration test can mount the app on
-   an ephemeral port without racing a second listener. */
+   an ephemeral port without racing a second listener. A serverless host
+   imports this file instead of running it, so nothing inside this block runs
+   there — anything the deploy needs in its log belongs above. */
 if (require.main === module) {
   app.listen(PORT, () => {
-    const db = foodDb.stats();
     console.log(`Server running at http://localhost:${PORT}`);
-    console.log(`FNDDS index: ${db.foodCount} foods (${db.loadMs} ms)`);
-    if (!vision.isConfigured()) {
-      console.warn('GEMINI_API_KEY is not set — photo analysis will return a 503 until it is.');
-    } else {
+    if (vision.isConfigured()) {
       vision.checkModelAvailable()
         .then((r) => {
           if (r.available) console.log(`Vision model: ${r.model}`);

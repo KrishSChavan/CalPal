@@ -2,6 +2,8 @@
    api.js — the server calls. fetch only; axios and its CDN <script> are gone.
    ========================================================================== */
 
+import { sessionToken } from './auth.js';
+
 export class ApiError extends Error {
   constructor(message, code) {
     super(message);
@@ -21,15 +23,27 @@ const FALLBACK = {
   bad_response: 'The model returned something unreadable. Try that photo again.',
   no_image: 'No photo reached the server.',
   too_large: 'That photo was too large to upload.',
+  no_session: 'Photo analysis needs a signed-in account. Guests can still add meals by hand.',
+  bad_session: 'That sign-in could not be verified. Sign in again.',
+  session_expired: 'Your sign-in has expired. Sign in again.',
+  not_configured: 'This server cannot verify sign-ins yet, so photo analysis is unavailable.',
 };
 
-async function post(path, body, { timeoutMs = 90000 } = {}) {
+async function post(path, body, { timeoutMs = 90000, auth = false } = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
+  /* Header, not a field in the form: a token in the body would be logged by
+     any proxy that records request bodies, and copied into every retry. */
+  const headers = {};
+  if (auth) {
+    const token = sessionToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
+
   let res;
   try {
-    res = await fetch(path, { method: 'POST', body, signal: ctrl.signal });
+    res = await fetch(path, { method: 'POST', body, headers, signal: ctrl.signal });
   } catch (err) {
     clearTimeout(timer);
     if (err.name === 'AbortError') {
@@ -60,7 +74,7 @@ export async function analyzeMeal({ blob, notes, slot, localTimeLabel, plateDiam
   if (slot) form.append('slot', slot);
   if (localTimeLabel) form.append('localTimeLabel', localTimeLabel);
   if (plateDiameterCm) form.append('plateDiameterCm', String(plateDiameterCm));
-  return post('/api/analyze', form);
+  return post('/api/analyze', form, { auth: true });
 }
 
 export async function health() {

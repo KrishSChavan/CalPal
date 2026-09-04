@@ -111,7 +111,10 @@ async function consumeGoogleRedirect() {
     if (nonce && claims.nonce && claims.nonce !== nonce) {
       throw new Error('That sign-in did not match this browser session. Try again.');
     }
-    enter(startSession({ kind: 'google', sub: claims.sub, name: claims.name, email: claims.email }));
+    enter(startSession({
+      kind: 'google', sub: claims.sub, name: claims.name, email: claims.email,
+      token: claims.sessionToken,
+    }));
   } catch (e) {
     toast(e.message || 'Google sign-in failed.', 'risk');
     busy(el.google, false);
@@ -167,6 +170,7 @@ async function appleSignIn() {
       sub: claims.sub,
       name: name || claims.name || '',
       email: res?.user?.email || claims.email || '',
+      token: claims.sessionToken,
     }));
   } catch (e) {
     const cancelled = e?.error === 'popup_closed_by_user' || e?.error === 'user_cancelled_authorize';

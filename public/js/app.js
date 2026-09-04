@@ -240,6 +240,17 @@ async function submitAdd() {
     renderConfirm();
     openSheet(el.confirmScrim);
   } catch (err) {
+    /* A token the server rejected is not something a retry fixes, and leaving
+       a dead session in place would fail every later photo the same way. Clear
+       it and send them back to the gate. A guest hitting no_session is NOT
+       that case — there is nothing wrong with their session, photo analysis
+       simply is not part of what a guest gets, so say so and stay put. */
+    if (err instanceof ApiError && (err.code === 'session_expired' || err.code === 'bad_session')) {
+      signOut();
+      toast(err.message, 'risk');
+      setTimeout(() => location.replace(LANDING_URL), 1200);
+      return;
+    }
     toast(err instanceof ApiError ? err.message : 'Analysis failed. Check your connection and try again.', 'risk');
   } finally {
     busy(false);
