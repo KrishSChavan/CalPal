@@ -21,7 +21,12 @@
      LARGE viewport on mobile Safari and Chrome — the one that assumes the URL
      bar is retracted — so the foot ends up behind the browser chrome. dvh
      tracks the viewport that is actually on screen, which is what the rest of
-     this app already uses for .app and .gate. */
+     this app already uses for .app and .gate.
+
+     This is the floor, not the whole story: dvh follows retractable browser
+     UI but NOT the software keyboard, and iOS leaves the document scrolled
+     after the keyboard is dismissed. onboarding.js overrides top/height from
+     visualViewport to cover that — see the iOS keyboard note there. */
   height: 100dvh;
   z-index: 120;
   display: flex;
@@ -40,7 +45,14 @@
    button is in it. Step 1 has no back button; reserving the column is what
    stops the ticks jumping sideways on the way to step 2 — and it lets the
    button be genuinely display:none there, out of the tab order and off the
-   screen reader, instead of merely invisible and still focusable. */
+   screen reader, instead of merely invisible and still focusable.
+
+   Every child is placed EXPLICITLY, which is the part that makes that work.
+   A display:none child is not an empty cell — it is removed from grid flow
+   altogether — so under auto-placement the ticks and Skip would each slide
+   one column left on step 1 and land back a column right on step 2. Naming
+   the columns pins them; the empty 2rem track survives on its own because it
+   is an explicit track, not one implied by an item sitting in it. */
 .onboard__bar {
   display: grid;
   grid-template-columns: 2rem 1fr auto;
@@ -50,6 +62,7 @@
 }
 
 .onboard__icon {
+  grid-column: 1;
   display: grid;
   place-items: center;
   width: 2rem;
@@ -62,6 +75,7 @@
 .onboard__icon:hover { color: var(--ink); }
 
 .onboard__ticks {
+  grid-column: 2;
   display: flex;
   gap: 0.3rem;
 }
@@ -77,6 +91,7 @@
 .onboard__tick.is-done { background: var(--accent); }
 
 .onboard__quit {
+  grid-column: 3;
   font-size: var(--t-sm);
   font-weight: 600;
   color: var(--ink-faint);
@@ -172,10 +187,9 @@
 
 /* .segmented comes from app.css; this only shrinks it and lets it sit right,
    because the unit toggle is a preference about the form and not one of the
-   answers being collected. */
-/* .segmented is a block-level grid, so it fills its container by default and
-   `width: auto` would not shrink it. fit-content plus an auto left margin is
-   what actually pushes it to the right of the measure column. */
+   answers being collected. It is a block-level grid, so it fills its container
+   by default and `width: auto` would not shrink it — fit-content plus an auto
+   left margin is what actually pushes it to the right of the measure column. */
 .segmented--mini {
   width: fit-content;
   margin: 0 0 1.25rem auto;

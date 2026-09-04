@@ -515,6 +515,70 @@ function advance() {
   }));
 }
 
+/* ------------------------------------------------------- the iOS keyboard */
+
+/* Why this exists, since it looks like something CSS should handle:
+
+   `position: fixed` on iOS is laid out against the LAYOUT viewport. That
+   viewport does not shrink when the software keyboard comes up, and — the
+   part that actually bites — iOS frequently leaves the document scrolled by
+   the amount it shifted to reveal the focused field, and does not put it back
+   when the keyboard goes away. The overlay then paints from a top edge that
+   is no longer the top of the screen: the foot lifts off the bottom and a
+   band of the app shows underneath. In a standalone PWA there is no browser
+   chrome to disguise it, which is why it is obvious there and nowhere else.
+   100dvh cannot fix this — the dynamic viewport tracks retractable browser
+   UI, not the keyboard.
+
+   So the panel is pinned to the VISUAL viewport, the rectangle actually on
+   screen. That is correct while the keyboard is up (the button sits just
+   above it) and correct again the moment it drops, without depending on iOS
+   restoring anything. Browsers without the API keep the CSS 100dvh. */
+
+let vvFrame = 0;
+
+const visual = () => globalThis.visualViewport || null;
+
+function syncToVisualViewport() {
+  const vv = visual();
+  if (!vv) return;
+  cancelAnimationFrame(vvFrame);
+  vvFrame = requestAnimationFrame(() => {
+    /* Setting top AND height leaves `bottom` over-constrained, so the CSS
+       inset:0 is ignored rather than fighting this. transform is untouched,
+       which is what keeps the slide animation free. */
+    el.root.style.top = `${vv.offsetTop}px`;
+    el.root.style.height = `${vv.height}px`;
+  });
+}
+
+/* iOS can also leave the document itself scrolled once the keyboard goes.
+   Nothing is scrollable behind a full-screen overlay, so any non-zero scroll
+   here is that artefact and only ever wants putting back to zero. */
+function onFocusOut() {
+  requestAnimationFrame(() => {
+    if (open && globalThis.scrollY) globalThis.scrollTo(0, 0);
+  });
+}
+
+function watchViewport(on) {
+  const vv = visual();
+  if (on) {
+    document.addEventListener('focusout', onFocusOut);
+    if (!vv) return;
+    vv.addEventListener('resize', syncToVisualViewport);
+    vv.addEventListener('scroll', syncToVisualViewport);
+    syncToVisualViewport();
+    return;
+  }
+
+  document.removeEventListener('focusout', onFocusOut);
+  cancelAnimationFrame(vvFrame);
+  if (!vv) return;
+  vv.removeEventListener('resize', syncToVisualViewport);
+  vv.removeEventListener('scroll', syncToVisualViewport);
+}
+
 /* --------------------------------------------------------------- open/close */
 
 function close(after) {
@@ -522,8 +586,13 @@ function close(after) {
   el.root.classList.remove('is-open');
   document.body.style.overflow = '';
   document.removeEventListener('keydown', onKey);
+  watchViewport(false);
   setTimeout(() => {
     el.root.hidden = true;
+    /* Cleared only now: dropping the pinned top/height mid-slide would jump
+       the panel just as it is animating away. */
+    el.root.style.top = '';
+    el.root.style.height = '';
     after?.();
   }, 460);
 }
@@ -566,6 +635,10 @@ export function openOnboarding({ profile = {}, mode = 'setup', onSave, onSkip } 
   el.track.style.transition = 'none';
   goTo(0, { focus: false });
   el.root.hidden = false;
+
+  /* Pin to the visible rectangle before the slide, so the panel animates to
+     the right height rather than resizing under the user afterwards. */
+  watchViewport(true);
 
   /* One frame with the layer laid out but still translated off the bottom,
      so the browser has a start value to animate the slide from. */
