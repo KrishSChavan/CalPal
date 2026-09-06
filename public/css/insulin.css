@@ -1,0 +1,332 @@
+/* ==========================================================================
+   insulin.css — the sliding window on the main screen, and the dose card
+   inside the confirm and correction sheets.
+
+   Loaded after app.css and onboard.css, which supply the tokens, .field,
+   .input, .notice, .working and .measure. Kept out of app.css for the same
+   reason onboard.css is: nothing in here paints at all for the majority of
+   users, who do not take insulin.
+
+   One rule runs through the whole file: an insulin number never gets the
+   accent colour. Purple is what this app uses for "the app did something" —
+   the goal bar, the primary button, a matched FNDDS row. A dose is a thing a
+   person does to themselves off the back of settings a clinician gave them,
+   and dressing it in the same paint as a calorie estimate would be the
+   interface making a claim the arithmetic cannot support. So the units are
+   set in plain ink at the largest size on the card, and colour is reserved
+   for the glucose bands, where it carries the meaning the consensus ranges
+   already gave it.
+   ========================================================================== */
+
+/* ==========================================================================
+   The window strip
+   ========================================================================== */
+
+.window {
+  margin: 0 var(--pad) 0.25rem;
+  padding: 0.875rem 0 0.25rem;
+  border-top: 1px solid var(--line-soft);
+}
+
+.window__stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.5rem;
+}
+
+/* Four tiles on one row down to a 320px screen. They hold two digits and a
+   unit, so the ceiling on the value size is what the narrowest of them can
+   take without wrapping, not what looks best on a large phone. */
+.wstat { min-width: 0; }
+
+.wstat__label {
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wstat__value {
+  margin-top: 0.2rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.wstat__value span {
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--ink-faint);
+  margin-left: 0.1rem;
+}
+
+/* The last-reading tile carries a band word instead of a unit, and the band
+   is the only thing on the strip allowed to be coloured — those five colours
+   mean exactly what the consensus ranges say they mean. */
+.wstat__value span[data-tone] {
+  display: block;
+  margin-left: 0;
+  letter-spacing: 0.02em;
+}
+
+.wstat__value span[data-tone="ok"]   { color: var(--ok); }
+.wstat__value span[data-tone="warn"] { color: var(--warn); }
+.wstat__value span[data-tone="risk"] { color: var(--risk); }
+
+.window__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 100%;
+  margin-top: 0.75rem;
+  padding: 0.5rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--ink-dim);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  transition: color 0.18s var(--ease), border-color 0.18s var(--ease);
+}
+
+.window__btn:hover {
+  color: var(--ink);
+  border-color: var(--ink-faint);
+}
+
+.window__doses:not(:empty) { margin-top: 0.5rem; }
+
+.wdose {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+  font-size: var(--t-sm);
+  color: var(--ink-dim);
+}
+
+.wdose:last-child { border-bottom: none; }
+.wdose:active { opacity: 0.6; }
+
+.wdose__time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+  font-size: var(--t-xs);
+  width: 4.25rem;
+}
+
+.wdose__kind { flex: none; }
+
+.wdose__body {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* ==========================================================================
+   The dose card
+   ========================================================================== */
+
+.dose {
+  margin-top: 0.25rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.dose__inputs .field:first-child { margin-top: 0; }
+
+/* The number, given the same weight the day's calorie total gets — because it
+   is the same kind of thing, a single figure the whole screen exists to
+   produce. Plain ink, for the reason in the file header. */
+.dose__verdict {
+  text-align: center;
+  padding: 1.25rem 0 0.5rem;
+}
+
+.dose__units {
+  font-size: clamp(2.5rem, 13vw, 3.25rem);
+  font-weight: 700;
+  letter-spacing: -0.045em;
+  line-height: 0.95;
+  font-variant-numeric: tabular-nums;
+}
+
+.dose__unitlabel {
+  font-size: var(--t-md);
+  color: var(--ink-faint);
+  margin-top: 0.3rem;
+}
+
+.dose__split {
+  margin-top: 0.5rem;
+  font-size: var(--t-sm);
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.dose__working { margin-top: 1rem; }
+
+/* Held back from anyone below range. A number withheld has to look withheld,
+   or it reads as a page that failed to load. */
+.dose__hold {
+  padding: 1rem;
+  border-radius: var(--r-sm);
+  background: rgba(242, 119, 154, 0.07);
+  border: 1px solid rgba(242, 119, 154, 0.3);
+}
+
+.dose__holdtitle {
+  font-size: var(--t-lg);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #f7a8c0;
+}
+
+.dose__hold .notice {
+  margin-top: 0.5rem;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+/* The log row. A checkbox and a number side by side, because the decision
+   ("did I take it") and the amount are one action taken at one moment. */
+.dose__log {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 1.25rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--ground-lift);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dose__log input[type="checkbox"] {
+  flex: none;
+  width: 1.15rem;
+  height: 1.15rem;
+  accent-color: var(--accent);
+}
+
+.dose__log > span:nth-of-type(1) { flex: 1; min-width: 0; }
+
+.dose__logunits {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.dose__logunits .input {
+  width: 4.25rem;
+  padding: 0.4rem 0.5rem;
+  text-align: right;
+}
+
+.dose__legal { margin-top: 1rem; }
+
+/* ==========================================================================
+   Trend arrows
+   ========================================================================== */
+
+/* Seven targets on one row. They are glyphs rather than words on purpose:
+   this row exists to be matched against what the CGM is showing, and the
+   fastest match is shape to shape. The word is in the hint underneath, which
+   changes as the selection does, and in the aria-label on every button — so
+   nothing here is a picture with no name. */
+.arrows {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 0.3rem;
+}
+
+.arrow {
+  display: grid;
+  place-items: center;
+  min-height: 2.75rem;
+  padding: 0.35rem 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink-dim);
+  font-size: 1.05rem;
+  line-height: 1;
+  transition: border-color 0.18s var(--ease), background 0.18s var(--ease), color 0.18s var(--ease);
+}
+
+.arrow:hover { border-color: var(--line-strong); color: var(--ink); }
+
+.arrow.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+/* ==========================================================================
+   Shared odds and ends
+   ========================================================================== */
+
+/* A third notice tone. Warn and risk are both a colour that means "stop and
+   read"; this one is for the calculator explaining what it just did, which is
+   worth printing and not worth alarming anybody with. */
+.notice--info {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--ink-dim);
+}
+
+/* "optional", "for your dose" — a qualifier on a field label, set quiet
+   enough that the label still reads as one phrase. */
+.field__opt {
+  font-weight: 500;
+  color: var(--ink-faint);
+  letter-spacing: 0;
+  text-transform: none;
+  font-size: var(--t-xs);
+}
+
+/* Not a redefinition of app.css's .btn--block: a modifier of its own, so a
+   later use of that shared class somewhere else does not inherit this
+   card's margin. .btn is inline-flex, hence the explicit display. */
+.dose__accept {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  margin-top: 1rem;
+}
+
+/* Two-word units — mg/dL, mmol/L — need more room than the 1.75rem the
+   height and weight rows reserve for "cm" and "kg". */
+.measure__unit--wide { width: 3.25rem; }
+
+/* A phrase in front of the box rather than only above it, so "1 unit per
+   [10] g" reads as the sentence it is. The ratio being entered upside down is
+   the single most dangerous typo on these screens and this is the cheapest
+   defence against it. */
+.measure__lead {
+  flex: none;
+  font-size: var(--t-sm);
+  color: var(--ink-dim);
+  white-space: nowrap;
+}

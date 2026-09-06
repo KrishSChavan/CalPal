@@ -13,7 +13,7 @@
    ========================================================================== */
 
 const BASE_KEY = 'ca:v2';
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 /* Which log is open. init(namespace) points this at the signed-in identity's
    own key; with no namespace it stays on the bare key, which is both the
@@ -69,7 +69,7 @@ export const SLOTS = ['breakfast', 'lunch', 'dinner', 'snack'];
 let db = null;
 
 function blank() {
-  return { version: SCHEMA_VERSION, days: {}, profile: {} };
+  return { version: SCHEMA_VERSION, days: {}, doses: {}, profile: {} };
 }
 
 function read(key = KEY) {
@@ -150,6 +150,13 @@ export function init(namespace) {
     const n = migrateV1(db);
     if (n) persist();
   }
+  /* v2 had no dose log. Nothing to convert — the map simply did not exist —
+     so the migration is to give it one and leave every meal alone. Done
+     unconditionally rather than under the version check, because a v3 blob
+     hand-edited or truncated somewhere else would otherwise reach addDose()
+     with no map to push onto. */
+  if (!db.doses || typeof db.doses !== 'object') db.doses = {};
+
   if (db.version !== SCHEMA_VERSION) {
     db.version = SCHEMA_VERSION;
     persist();
@@ -255,6 +262,123 @@ export function removeMeal(key, id) {
 
 export function findMeal(key, id) {
   return (db.days[key] || []).find((m) => m.id === id) || null;
+}
+
+/* ------------------------------------------------------------- the doses */
+
+/* Insulin is day-keyed like meals, which is right for "how much did I take
+   today" and wrong for everything the sliding window needs — a dose at 23:40
+   is still working at 01:20 and lives under yesterday's key. So every window
+   read goes through dosesBetween(), which walks the day keys the window
+   actually touches instead of the one the clock happens to be in.
+
+   `kind` is 'bolus' (counts toward active insulin), 'basal' (long-acting,
+   deliberately excluded from IOB — see insulin.js) or 'reading' (a glucose
+   value logged with no dose, which is a real thing to want to record). */
+export const DOSE_KINDS = ['bolus', 'basal', 'reading'];
+
+export function dosesOn(key) {
+  return (db.doses[key] || []).slice().sort((a, b) => a.ts - b.ts);
+}
+
+export function addDose(key, dose) {
+  const day = db.doses[key] || (db.doses[key] = []);
+  const row = { id: newId(), ts: Date.now(), kind: 'bolus', ...dose };
+  day.push(row);
+  day.sort((a, b) => a.ts - b.ts);
+  const ok = persist();
+  return { dose: row, persisted: ok };
+}
+
+export function updateDose(key, id, patch) {
+  const day = db.doses[key];
+  if (!day) return null;
+  const i = day.findIndex((d) => d.id === id);
+  if (i === -1) return null;
+  day[i] = { ...day[i], ...patch, edited: true };
+  persist();
+  return day[i];
+}
+
+export function removeDose(key, id) {
+  const day = db.doses[key];
+  if (!day) return false;
+  const i = day.findIndex((d) => d.id === id);
+  if (i === -1) return false;
+  day.splice(i, 1);
+  if (!day.length) delete db.doses[key];
+  persist();
+  return true;
+}
+
+export function findDose(key, id) {
+  return (db.doses[key] || []).find((d) => d.id === id) || null;
+}
+
+/* The day keys a timestamp window touches, inclusive at both ends. Built by
+   walking dates rather than by dividing milliseconds, so a DST change — where
+   a local day is 23 or 25 hours long — cannot drop or duplicate a key. */
+function keysBetween(fromTs, toTs) {
+  const first = dateKey(new Date(fromTs));
+  const last = dateKey(new Date(toTs));
+  const keys = [];
+  let k = first;
+  /* A window is hours wide, so this loop is two or three passes. The bound is
+     a guard against a caller handing in a reversed or absurd range. */
+  for (let i = 0; i < 400 && k <= last; i++) {
+    keys.push(k);
+    k = shiftKey(k, 1);
+  }
+  return keys;
+}
+
+export function dosesBetween(fromTs, toTs = Date.now()) {
+  const out = [];
+  for (const k of keysBetween(fromTs, toTs)) {
+    for (const d of db.doses[k] || []) {
+      if (d.ts >= fromTs && d.ts <= toTs) out.push(d);
+    }
+  }
+  return out.sort((a, b) => a.ts - b.ts);
+}
+
+export function mealsBetween(fromTs, toTs = Date.now()) {
+  const out = [];
+  for (const k of keysBetween(fromTs, toTs)) {
+    for (const m of db.days[k] || []) {
+      if (m.ts >= fromTs && m.ts <= toTs) out.push(m);
+    }
+  }
+  return out.sort((a, b) => a.ts - b.ts);
+}
+
+/* Bolus and basal are added up apart because they answer different questions:
+   the bolus figure is what the day's food and corrections cost, the basal
+   figure is a background rate that would swamp it. */
+export function insulinTotalsOn(key) {
+  const t = { bolus: 0, basal: 0, count: 0, readings: 0 };
+  for (const d of db.doses[key] || []) {
+    const u = Number(d.units) || 0;
+    if (d.kind === 'basal') t.basal += u;
+    else if (u > 0) { t.bolus += u; t.count++; }
+    /* A reading is counted wherever it was typed, beside a dose or alone —
+       the question "how many times did I check today" does not care which. */
+    if (Number.isFinite(Number(d.bg)) && Number(d.bg) > 0) t.readings++;
+  }
+  t.bolus = Math.round(t.bolus * 10) / 10;
+  t.basal = Math.round(t.basal * 10) / 10;
+  return t;
+}
+
+/* Every glucose value on record in the last `days` days, wherever it was
+   typed — beside a dose, or on its own. This is what the account screen's
+   time-in-range summary reads. */
+export function readingsSince(days = 14) {
+  const from = new Date();
+  from.setDate(from.getDate() - days);
+  return dosesBetween(from.getTime())
+    .filter((d) => Number.isFinite(Number(d.bg)) && Number(d.bg) > 0)
+    .map((d) => ({ ts: d.ts, bg: Number(d.bg), trend: d.trend || null }));
 }
 
 /* Profile is written now and read later: height/weight/goal and the Google or

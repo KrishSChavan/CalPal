@@ -287,3 +287,122 @@ test('init with no namespace still uses the bare key', async () => {
   assert.ok(backing.getItem('ca:v2'));
   assert.equal(backing.getItem('ca:v2:guest'), null);
 });
+
+/* ------------------------------------------------------------- the doses */
+
+test('doses are day-keyed and totalled apart from basal', async () => {
+  install();
+  const s = await freshStore();
+  s.init();
+
+  s.addDose('2026-09-02', { units: 6, kind: 'bolus', ts: Date.parse('2026-09-02T08:00:00') });
+  s.addDose('2026-09-02', { units: 24, kind: 'basal', ts: Date.parse('2026-09-02T22:00:00') });
+  s.addDose('2026-09-02', { units: 0, kind: 'reading', bg: 142, ts: Date.parse('2026-09-02T12:00:00') });
+
+  const t = s.insulinTotalsOn('2026-09-02');
+  assert.equal(t.bolus, 6, 'long-acting must not inflate the day’s mealtime figure');
+  assert.equal(t.basal, 24);
+  assert.equal(t.count, 1);
+  assert.equal(t.readings, 1);
+
+  assert.equal(s.dosesOn('2026-09-02').length, 3);
+  assert.deepEqual(s.dosesOn('2026-09-03'), []);
+});
+
+test('dosesOn returns the day in the order it happened', async () => {
+  install();
+  const s = await freshStore();
+  s.init();
+  s.addDose('2026-09-02', { units: 3, ts: Date.parse('2026-09-02T19:00:00') });
+  s.addDose('2026-09-02', { units: 5, ts: Date.parse('2026-09-02T07:00:00') });
+  assert.deepEqual(s.dosesOn('2026-09-02').map((d) => d.units), [5, 3]);
+});
+
+test('the window reads across midnight, not just the current day key', async () => {
+  install();
+  const s = await freshStore();
+  s.init();
+
+  /* The case the day-keyed layout gets wrong on its own: a dose at 23:40 is
+     still working at 01:20 and lives under the previous day. */
+  const late = Date.parse('2026-09-02T23:40:00');
+  const now = Date.parse('2026-09-03T01:20:00');
+  s.addDose('2026-09-02', { units: 6, ts: late });
+  s.addDose('2026-09-03', { units: 2, ts: Date.parse('2026-09-03T01:00:00') });
+
+  const window = s.dosesBetween(now - 5 * 3600 * 1000, now);
+  assert.deepEqual(window.map((d) => d.units), [6, 2],
+    'both doses are inside a five-hour window that crosses midnight');
+
+  /* And a dose older than the window is left out of it. */
+  s.addDose('2026-09-02', { units: 9, ts: Date.parse('2026-09-02T12:00:00') });
+  assert.deepEqual(
+    s.dosesBetween(now - 5 * 3600 * 1000, now).map((d) => d.units),
+    [6, 2]
+  );
+});
+
+test('mealsBetween spans the same way doses do', async () => {
+  install();
+  const s = await freshStore();
+  s.init();
+  s.addMeal('2026-09-02', { name: 'Late curry', kcal: 700, carb: 80, ts: Date.parse('2026-09-02T23:30:00') });
+  s.addMeal('2026-09-03', { name: 'Toast', kcal: 200, carb: 30, ts: Date.parse('2026-09-03T08:00:00') });
+
+  const now = Date.parse('2026-09-03T01:00:00');
+  const window = s.mealsBetween(now - 3 * 3600 * 1000, now);
+  assert.deepEqual(window.map((m) => m.carb), [80]);
+});
+
+test('a dose can be edited and deleted, and an emptied day drops its key', async () => {
+  install();
+  const s = await freshStore();
+  s.init();
+  const { dose } = s.addDose('2026-09-02', { units: 4 });
+
+  s.updateDose('2026-09-02', dose.id, { units: 5.5 });
+  assert.equal(s.findDose('2026-09-02', dose.id).units, 5.5);
+  assert.equal(s.findDose('2026-09-02', dose.id).edited, true);
+
+  assert.equal(s.removeDose('2026-09-02', dose.id), true);
+  assert.equal(s.findDose('2026-09-02', dose.id), null);
+  assert.equal(s.removeDose('2026-09-02', dose.id), false);
+  assert.deepEqual(s.dosesOn('2026-09-02'), []);
+});
+
+test('readingsSince gathers glucose wherever it was typed', async () => {
+  install();
+  const s = await freshStore();
+  s.init();
+  const today = s.dateKey();
+  const now = Date.now();
+
+  s.addDose(today, { units: 6, bg: 180, ts: now - 3600000 });
+  s.addDose(today, { units: 0, kind: 'reading', bg: 95, ts: now - 1800000 });
+  s.addDose(today, { units: 3, ts: now - 900000 });          // no reading on it
+
+  const readings = s.readingsSince(14);
+  assert.deepEqual(readings.map((r) => r.bg), [180, 95]);
+});
+
+test('a v2 log gains a dose map without touching its meals', async () => {
+  const backing = install();
+
+  /* Exactly what v2 wrote: days and profile, no doses key at all. */
+  backing.setItem('ca:v2', JSON.stringify({
+    version: 2,
+    days: { '2026-09-02': [{ id: 'm1', ts: 1, name: 'Eggs', kcal: 180, slot: 'breakfast' }] },
+    profile: { goalKcal: 2000 },
+  }));
+
+  const s = await freshStore();
+  s.init();
+  assert.equal(s.totalsOn('2026-09-02').kcal, 180, 'the meals must survive the migration');
+  assert.equal(s.getProfile().goalKcal, 2000);
+  assert.deepEqual(s.dosesOn('2026-09-02'), []);
+
+  /* And the new map is writable straight away, which is the whole point. */
+  s.addDose('2026-09-02', { units: 4 });
+  assert.equal(s.insulinTotalsOn('2026-09-02').bolus, 4);
+  assert.equal(JSON.parse(backing.getItem('ca:v2')).version, 3);
+});

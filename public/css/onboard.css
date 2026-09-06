@@ -467,3 +467,266 @@
      since .obstep starts at opacity 0. */
   .obstep { opacity: 1; }
 }
+
+/* ==========================================================================
+   The insulin steps
+
+   Three of the eight steps only exist for someone who doses, and everything
+   below is theirs. It sits at the end of onboard.css rather than in
+   insulin.css because these are onboarding chrome — the scale table and the
+   decay curve are read once while the settings are being confirmed, and never
+   painted again on the main screen.
+   ========================================================================== */
+
+.obsub {
+  margin: 2rem 0 0.35rem;
+  font-size: var(--t-lg);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+/* ------------------------------------------------------------- preview */
+
+/* The worked example under the three ratio boxes, live while they are typed.
+   A carb ratio entered upside down looks perfectly reasonable in a box and
+   catastrophic in a sentence, which is the whole job of this block. */
+.preview {
+  margin-top: 1.75rem;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+}
+
+.preview__head {
+  font-size: var(--t-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-hi);
+}
+
+.preview__line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 0.4rem;
+  font-size: var(--t-sm);
+  color: var(--ink-dim);
+}
+
+.preview__line b {
+  flex: none;
+  font-size: var(--t-xl);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+}
+
+.preview__split {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.15rem;
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------- slot ratios */
+
+/* Folded away behind a disclosure because most people have one ratio, and the
+   four who need four should not have the other three reading it as a form
+   they left incomplete. */
+.disclose {
+  margin-top: 1.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.disclose__head {
+  padding: 0.875rem 1rem;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--ink-dim);
+  cursor: pointer;
+  list-style: none;
+}
+
+.disclose__head::-webkit-details-marker { display: none; }
+
+.disclose__head::after {
+  content: "+";
+  float: right;
+  font-weight: 400;
+  color: var(--ink-faint);
+}
+
+.disclose[open] .disclose__head { color: var(--ink); }
+.disclose[open] .disclose__head::after { content: "−"; }
+
+.disclose__body { padding: 0 1rem 1rem; }
+
+.slotratios {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.slotratio {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.slotratio__label {
+  flex: none;
+  width: 5.25rem;
+  font-size: var(--t-sm);
+  font-weight: 600;
+}
+
+.slotratio__lead,
+.slotratio__unit {
+  flex: none;
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+}
+
+.slotratio .input {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  padding: 0.5rem 0.625rem;
+}
+
+/* --------------------------------------------------------------- scale */
+
+/* The personal sliding scale. A real table, not a stack of divs: it is a
+   lookup grid with two axes of meaning and it wants to be read down a column
+   as well as across a row, which is exactly what a <table> is for and what a
+   screen reader will announce it as.
+
+   It scrolls inside its own box rather than widening the step, because the
+   glucose column has to stay legible at 320px and the page itself must never
+   scroll sideways. */
+.scale-wrap {
+  overflow-x: auto;
+  margin-top: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  -webkit-overflow-scrolling: touch;
+}
+
+.scale {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--t-sm);
+}
+
+.scale th,
+.scale td {
+  padding: 0.5rem 0.875rem;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.scale thead th {
+  font-size: var(--t-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  border-bottom-color: var(--line);
+}
+
+.scale tbody th {
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.scale tbody tr:last-child th,
+.scale tbody tr:last-child td { border-bottom: none; }
+
+.scale__num {
+  text-align: right;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The target row is the pivot the whole column is measured from, so it is
+   marked rather than left for the reader to find by matching numbers. */
+.scale tr.is-target th,
+.scale tr.is-target td {
+  background: var(--accent-soft);
+  border-bottom-color: var(--accent-line);
+}
+
+.scale__band {
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--ink-faint);
+}
+
+.scale__band[data-tone="ok"]   { color: var(--ok); }
+.scale__band[data-tone="warn"] { color: var(--warn); }
+.scale__band[data-tone="risk"] { color: var(--risk); }
+
+/* ----------------------------------------------------------- iob curve */
+
+/* One unit decaying to nothing. Drawn rather than described because the shape
+   is the point: the curve is nearly flat for the first half hour and then
+   falls away, which is why "half of it is gone by half the duration" — the
+   straight-line model this replaced — was wrong in both directions.
+
+   preserveAspectRatio is none, so the 0-100 viewBox stretches to whatever box
+   it lands in and the stroke has to be non-scaling or it would be drawn as a
+   wedge, thick at one end. */
+.iobfig {
+  margin: 0.75rem 0 0;
+  padding: 0.875rem 1rem 0.625rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.iobfig__svg {
+  display: block;
+  width: 100%;
+  height: 4.5rem;
+  overflow: visible;
+}
+
+.iobfig__line {
+  fill: none;
+  stroke: var(--accent-hi);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.iobfig__peak {
+  stroke: var(--ink-faint);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.iobfig__axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  font-size: var(--t-xs);
+  color: var(--ink-faint);
+}
+
+/* The middle label sits under the peak marker rather than at the centre of
+   the row, so the three do not read as evenly spaced ticks. */
+.iobfig__axis span:nth-child(2) { text-align: center; }

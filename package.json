@@ -16,7 +16,8 @@
     "test:api": "node --test test/api.test.js",
     "test:vision": "node server/vision.test.js",
     "test:db:adv": "node server/food-db.adversarial.test.js",
-    "test:profile": "node --test test/profile.test.mjs"
+    "test:profile": "node --test test/profile.test.mjs",
+    "test:insulin": "node --test test/insulin.test.mjs"
   },
   "keywords": [],
   "author": "",

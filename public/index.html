@@ -21,6 +21,7 @@
 
   <link rel="stylesheet" href="css/app.css">
   <link rel="stylesheet" href="css/onboard.css">
+  <link rel="stylesheet" href="css/insulin.css">
 
   <!-- app.js redirects too, but a module is deferred: without this the empty
        shell paints for a frame before the gate takes over. -->
@@ -90,6 +91,41 @@
         <div class="macro__head"><span class="macro__dot"></span><span class="macro__label">Fat</span></div>
         <div class="macro__value num" id="dayFat">0<span>g</span></div>
       </div>
+    </section>
+
+    <!-- The sliding window. Hidden outright for anyone who does not dose —
+         see insulinPayload() in onboarding.js, which clears the fields rather
+         than leaving stale ones behind. "Active" is insulin still to act on
+         the decay curve, not insulin injected today, so it falls between
+         renders and is repainted on a timer. -->
+    <section class="window" id="insulinWindow" aria-label="Insulin" hidden>
+      <!-- One word each. Four tiles have to fit across a 320px screen, and a
+           label that ellipsises into "CARBS AB…" tells the reader less than
+           the short word does — the full sense is on the title and on the
+           value's own aria-label. -->
+      <div class="window__stats">
+        <div class="wstat">
+          <div class="wstat__label" title="Bolus insulin logged today">Insulin</div>
+          <div class="wstat__value num" id="winTotal" aria-label="Bolus insulin logged today">0<span>u</span></div>
+        </div>
+        <div class="wstat">
+          <div class="wstat__label" title="Insulin from earlier doses still to act">Active</div>
+          <div class="wstat__value num" id="winActive" aria-label="Insulin still active">0<span>u</span></div>
+        </div>
+        <div class="wstat">
+          <div class="wstat__label" title="Carbohydrate from recent meals still absorbing">Carbs</div>
+          <div class="wstat__value num" id="winCob" aria-label="Carbohydrate still absorbing">0<span>g</span></div>
+        </div>
+        <div class="wstat">
+          <div class="wstat__label" title="The most recent glucose reading you logged">Glucose</div>
+          <div class="wstat__value num" id="winBg" aria-label="Most recent glucose reading">—</div>
+        </div>
+      </div>
+      <button class="window__btn" id="doseBtn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        Log insulin or a reading
+      </button>
+      <div class="window__doses" id="winDoses"></div>
     </section>
 
     <div class="section-head">
@@ -181,6 +217,16 @@
             <label class="field__label" for="manualKcal">Calories</label>
             <input class="input input--num" id="manualKcal" type="number" inputmode="numeric" min="0" step="1" placeholder="450">
           </div>
+          <!-- Carbohydrate is optional for everyone else and the only field
+               that matters to a carb-counting dose, so the label says which
+               it is for rather than pretending everybody needs it. -->
+          <div class="field">
+            <label class="field__label" for="manualCarb">Carbohydrate <span class="field__opt" id="manualCarbWhy">optional</span></label>
+            <div class="measure">
+              <input class="input input--num" id="manualCarb" type="number" inputmode="numeric" min="0" step="1" placeholder="55">
+              <span class="measure__unit">g</span>
+            </div>
+          </div>
           <div class="field">
             <label class="field__label" for="manualSlot">Meal</label>
             <div class="chips" id="manualSlot" role="group"></div>
@@ -228,6 +274,29 @@
       <div class="sheet__foot">
         <button class="btn btn--danger" id="mealDelete">Delete</button>
         <button class="btn btn--primary" id="mealSave">Save changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ Dose sheet ============================ -->
+  <!-- Corrections and readings taken away from a meal. The mealtime dose has
+       its own card inside the confirm sheet, because a dose worked out from a
+       plate belongs beside the plate — this is for everything else, and for
+       the record the sliding window is computed from. -->
+  <div class="scrim" id="doseScrim" role="dialog" aria-modal="true" aria-labelledby="doseTitle" hidden>
+    <div class="sheet">
+      <div class="sheet__grip"></div>
+      <div class="sheet__head">
+        <h2 class="sheet__title" id="doseTitle">Log insulin</h2>
+        <button class="sheet__close" data-close="doseScrim" aria-label="Close">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <div class="sheet__body" id="doseBody"></div>
+      <div class="sheet__foot">
+        <button class="btn btn--danger" id="doseDelete" hidden>Delete</button>
+        <button class="btn btn--quiet" data-close="doseScrim">Cancel</button>
+        <button class="btn btn--primary" id="doseSave">Save</button>
       </div>
     </div>
   </div>

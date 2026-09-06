@@ -106,6 +106,53 @@ editable. The two fields that most improve the estimate are the ones a photo
 physically cannot show — **cooking fat** and **dairy fat content** — which is
 why the notes box asks for them.
 
+## Insulin dosing
+
+The account section asks anyone who takes mealtime insulin for their own
+settings, and turns a logged plate into a suggested dose:
+
+```
+carb dose        = carbohydrate grams ÷ carb ratio
+correction dose  = (glucose − target) ÷ correction factor
+minus            = insulin still active from earlier doses
+```
+
+The details that matter, all of them in `public/js/insulin.js` and checked by
+`test/insulin.test.mjs` against the published sources:
+
+- **Active insulin** decays along the exponential curve Loop and oref0 use,
+  parameterised by time-to-peak (55/75/150 min for ultra-rapid, rapid and
+  regular) and duration of action. It is subtracted from the **correction
+  only, never from the carb dose** — the pump-standard behaviour, so a meal is
+  always covered. That rolling window is read across midnight, since a dose at
+  23:40 is still working at 01:20.
+- **Glucose is stored in mg/dL**, displayed in mg/dL or mmol/L. The bands are
+  the 2019 International Consensus on Time in Range — the ones Dexcom Clarity
+  reports against: <54 urgent low, 54–69 low, 70–180 in range, 181–250 high,
+  >250 very high.
+- **Below 70 mg/dL no dose is offered at all.** The screen says to treat the
+  low first. A suggestion withheld is recoverable; a meal dose stacked on a
+  hypo is not.
+- **Dexcom trend arrows** are supported using the Pettus–Edelman method —
+  shift the reading by what the arrow predicts for the next half hour, then
+  divide by the person's own correction factor. Off by default, because
+  trend-informed dosing has several competing algorithms and no consensus.
+  The test suite cross-checks it against the Aleppo/Laffel per-ISF table.
+- **The sliding scale is generated, not printed.** Rather than a fixed card
+  issued to everybody, the account screen renders the correction ladder and
+  the carb ladder from that person's own ratio, factor and target — and the
+  tests assert every row equals what the calculator would say for the same
+  reading, so the table can never drift from the app.
+- **Guard rails**: a per-dose ceiling, rounding to whatever the pen can dial,
+  a ketone warning above 250 mg/dL, and a cross-check of the entered ratios
+  against the 500 and 1800 rules (450/1500 for regular insulin) whenever a
+  total daily dose is given — which is what catches a carb ratio typed the
+  wrong way round.
+
+None of it is medical advice, and the app says so on every screen that shows
+a number. The settings come from a clinician; the carbohydrate count above
+them is an estimate from a photograph.
+
 ## Layout
 
 ```
@@ -116,6 +163,9 @@ scripts/build-fndds.js   rebuilds data/fndds-lite.json from USDA
 data/fndds-lite.json     the bundled database (committed on purpose)
 public/js/camera.js      capture + canvas re-encode (EXIF, HEIC, downscale)
 public/js/storage.js     day-keyed history in localStorage
+public/js/profile.js     height/weight/age -> a daily calorie target
+public/js/insulin.js     ratios, correction, and the active-insulin window
+public/js/onboarding.js  the account section, calorie and insulin steps
 public/js/app.js         screens
 docs/RESEARCH.md         the sourced research this design rests on
 ```
